@@ -1,28 +1,23 @@
 import { FontAwesome } from '@expo/vector-icons';
 import { onAuthStateChanged, signOut, User } from 'firebase/auth';
 import React, { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, Modal, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, FlatList, KeyboardAvoidingView, Modal, Platform, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import MapView, { Marker, PROVIDER_DEFAULT, Region } from 'react-native-maps';
 import CityDetailSheet from '../components/CityDetailSheet';
 import LinkAccountScreen from '../components/LinkAccountScreen';
 import LoginScreen from '../components/LoginScreen';
 import { auth } from '../config/firebaseConfig';
-import { getAllSavedPlaces, getUnlockedCities, getUserProfile, linkCoupleAccounts, savePlace, unlockCity } from '../services/firestoreService';
+import { CITY_CATALOG, City } from '../constants/cities';
+import { getAllSavedPlaces, getUnlockedCities, getUserProfile, linkCoupleAccounts, savePlace, unlockCity, deleteUnlockedCity } from '../services/firestoreService';
 
 const LITHUANIA_REGION = { latitude: 55.1694, longitude: 23.8813, latitudeDelta: 3.2, longitudeDelta: 4.8 };
 const ZOOM_THRESHOLD = 0.15;
 
-interface City { id: string; name: string; latitude: number; longitude: number; }
-
-const CITY_CATALOG: City[] = [
-  { id: 'vilnius', name: 'Vilnius', latitude: 54.6872, longitude: 25.2797 },
-  { id: 'kaunas', name: 'Kaunas', latitude: 54.8985, longitude: 23.9036 },
-  { id: 'klaipeda', name: 'Klaipėda', latitude: 55.7033, longitude: 21.1443 },
-  { id: 'siauliai', name: 'Šiauliai', latitude: 55.9349, longitude: 23.3137 },
-  { id: 'panevezys', name: 'Panevėžys', latitude: 55.7348, longitude: 24.3575 },
-  { id: 'nida', name: 'Nida', latitude: 55.3033, longitude: 21.0069 },
-  { id: 'anyksciai', name: 'Anykščiai', latitude: 55.5261, longitude: 25.1030 },
-];
+const normalizeText = (text: string) =>
+  text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
 
 export default function App() {
   const mapRef = useRef<MapView>(null); 
@@ -32,14 +27,22 @@ export default function App() {
   const [unlockedCities, setUnlockedCities] = useState<City[]>([]);
   const [savedMapPlaces, setSavedMapPlaces] = useState<any[]>([]);
   const [showAddCityModal, setShowAddCityModal] = useState(false);
+  const [citySearchQuery, setCitySearchQuery] = useState('');
+  const [citySearchResults, setCitySearchResults] = useState<City[]>([]);
+  const [isSearchingCity, setIsSearchingCity] = useState(false);
+  const citySearchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const citySearchAbortControllerRef = useRef<AbortController | null>(null);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   
   const [showPlaces, setShowPlaces] = useState(false); 
   
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
+  const [isSearchingLocation, setIsSearchingLocation] = useState(false);
   const [previewPlace, setPreviewPlace] = useState<any>(null); 
   const [partnerCodeInput, setPartnerCodeInput] = useState('');
+  const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchAbortControllerRef = useRef<AbortController | null>(null);
   
   const [user, setUser] = useState<User | null>(null);
   const [hasLinkedAccount, setHasLinkedAccount] = useState<boolean>(false);
@@ -81,6 +84,116 @@ export default function App() {
     await unlockCity(myCoupleId, city);
     await loadCitiesAndPlaces(myCoupleId);
     setShowAddCityModal(false);
+    setCitySearchQuery('');
+    setCitySearchResults([]);
+    mapRef.current?.animateToRegion({
+      latitude: city.latitude,
+      longitude: city.longitude,
+      latitudeDelta: 0.15,
+      longitudeDelta: 0.15,
+    });
+  };
+
+  const handleCitySearch = (text: string) => {
+    setCitySearchQuery(text);
+
+    if (citySearchTimeoutRef.current) {
+      clearTimeout(citySearchTimeoutRef.current);
+    }
+    if (citySearchAbortControllerRef.current) {
+      citySearchAbortControllerRef.current.abort();
+    }
+
+    const trimmed = text.trim();
+    if (trimmed.length < 2) {
+      setCitySearchResults([]);
+      setIsSearchingCity(false);
+      return;
+    }
+
+    setIsSearchingCity(true);
+    citySearchTimeoutRef.current = setTimeout(async () => {
+      const abortController = new AbortController();
+      citySearchAbortControllerRef.current = abortController;
+
+      try {
+        const query = `${trimmed}, Lietuva`;
+        const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=5&addressdetails=1&countrycodes=lt&accept-language=lt`;
+
+        const response = await fetch(url, {
+          signal: abortController.signal,
+          headers: {
+            'User-Agent': 'ActivityMapApp/1.0 (activitymap@app.lt)',
+            'Accept-Language': 'lt, en;q=0.5',
+          },
+        });
+
+        if (!response.ok) {
+          setIsSearchingCity(false);
+          return;
+        }
+
+        const contentType = response.headers.get('content-type') || '';
+        let data: any[] = [];
+        if (!contentType.includes('application/json')) {
+          const textResponse = await response.text();
+          if (textResponse.trim().startsWith('<')) {
+            setIsSearchingCity(false);
+            return;
+          }
+          data = JSON.parse(textResponse);
+        } else {
+          data = await response.json();
+        }
+
+        if (Array.isArray(data)) {
+          const mapped: City[] = data
+            .map((item: any) => {
+              const name = item.name || item.display_name.split(',')[0].trim();
+              const id = `osm_${item.place_id}`;
+              return {
+                id,
+                name,
+                latitude: parseFloat(item.lat),
+                longitude: parseFloat(item.lon),
+              };
+            })
+            .filter((c) => !unlockedCities.some((u) => normalizeText(u.name) === normalizeText(c.name)));
+          setCitySearchResults(mapped);
+        }
+      } catch (e: any) {
+        if (e.name !== 'AbortError') {
+          console.error("City search error: ", e);
+        }
+      } finally {
+        setIsSearchingCity(false);
+      }
+    }, 400);
+  };
+
+  const handleDeleteCity = (city: City) => {
+    Alert.alert(
+      'Remove City',
+      `Are you sure you want to remove ${city.name} and all its saved places?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            if (!myCoupleId) return;
+            try {
+              await deleteUnlockedCity(myCoupleId, city.id);
+              await loadCitiesAndPlaces(myCoupleId);
+              setMapMode('default');
+              setSelectedCity(null);
+            } catch (err: any) {
+              Alert.alert('Error', err.message || 'Could not remove city');
+            }
+          },
+        },
+      ]
+    );
   };
 
   const onCityTap = (city: City) => {
@@ -96,33 +209,67 @@ export default function App() {
     }
   };
 
-const handleOSMSearch = async (text: string) => {
+  const handleOSMSearch = (text: string) => {
     setSearchQuery(text);
-    if (text.length < 3) { setSearchResults([]); return; }
-    try {
-      const response = await fetch(
-        `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(text + ' ' + selectedCity?.name + ' Lithuania')}&format=json&limit=4`,
-        {
-          headers: {
-            // OpenStreetMap requires a unique User-Agent so they don't block requests
-            'User-Agent': 'ActivityMapApp/1.0 (gedas@student.vu.lt)',
-          },
-        }
-      );
-      
-      const textResponse = await response.text();
-      
-      // Safety check: if it starts with '<', it's HTML (an error block), not JSON
-      if (textResponse.trim().startsWith('<')) {
-        console.error("OSM returned HTML error page instead of JSON");
-        return;
-      }
 
-      const data = JSON.parse(textResponse);
-      setSearchResults(data);
-    } catch (e) {
-      console.error("Search error: ", e);
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
     }
+    if (searchAbortControllerRef.current) {
+      searchAbortControllerRef.current.abort();
+    }
+
+    const trimmed = text.trim();
+    if (trimmed.length < 2) {
+      setSearchResults([]);
+      setIsSearchingLocation(false);
+      return;
+    }
+
+    setIsSearchingLocation(true);
+    searchTimeoutRef.current = setTimeout(async () => {
+      const abortController = new AbortController();
+      searchAbortControllerRef.current = abortController;
+
+      try {
+        const query = selectedCity ? `${trimmed}, ${selectedCity.name}, Lietuva` : `${trimmed}, Lietuva`;
+        const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=5&addressdetails=1&countrycodes=lt&accept-language=lt`;
+
+        const response = await fetch(url, {
+          signal: abortController.signal,
+          headers: {
+            'User-Agent': 'ActivityMapApp/1.0 (activitymap@app.lt)',
+            'Accept-Language': 'lt, en;q=0.5',
+          },
+        });
+
+        if (!response.ok) {
+          setIsSearchingLocation(false);
+          return;
+        }
+
+        const contentType = response.headers.get('content-type') || '';
+        if (!contentType.includes('application/json')) {
+          const textResponse = await response.text();
+          if (textResponse.trim().startsWith('<')) {
+            // HTML error response / rate limit
+            setIsSearchingLocation(false);
+            return;
+          }
+          const data = JSON.parse(textResponse);
+          setSearchResults(Array.isArray(data) ? data : []);
+        } else {
+          const data = await response.json();
+          setSearchResults(Array.isArray(data) ? data : []);
+        }
+      } catch (e: any) {
+        if (e.name !== 'AbortError') {
+          console.error("Search error: ", e);
+        }
+      } finally {
+        setIsSearchingLocation(false);
+      }
+    }, 400);
   };
 
   const selectSearchResult = (item: any) => {
@@ -182,7 +329,23 @@ const handleOSMSearch = async (text: string) => {
     }
   };
 
-  const availableCitiesToAdd = CITY_CATALOG.filter(c => !unlockedCities.some(u => u.id === c.id));
+  const availableCitiesToAdd = CITY_CATALOG
+    .filter(c => !unlockedCities.some(u => u.id === c.id || normalizeText(u.name) === normalizeText(c.name)))
+    .filter(c => {
+      if (!citySearchQuery.trim()) return true;
+      const normalizedQuery = normalizeText(citySearchQuery.trim());
+      const normalizedName = normalizeText(c.name);
+      return normalizedName.includes(normalizedQuery);
+    });
+
+  const combinedCitiesToAdd = [
+    ...availableCitiesToAdd,
+    ...citySearchResults.filter(
+      osmCity =>
+        !availableCitiesToAdd.some(c => normalizeText(c.name) === normalizeText(osmCity.name)) &&
+        !unlockedCities.some(u => normalizeText(u.name) === normalizeText(osmCity.name))
+    ),
+  ];
 
   if (loading) return <View style={styles.centered}><ActivityIndicator size="large" color="#007AFF" /></View>;
   if (!user) return <LoginScreen />;
@@ -253,6 +416,9 @@ const handleOSMSearch = async (text: string) => {
               onChangeText={handleOSMSearch}
               autoFocus
             />
+            {isSearchingLocation && (
+              <ActivityIndicator size="small" color="#007AFF" style={{ marginLeft: 8 }} />
+            )}
           </View>
           
           {searchResults.length > 0 && (
@@ -331,32 +497,89 @@ const handleOSMSearch = async (text: string) => {
             <TouchableOpacity style={styles.menuSecondaryButton} onPress={() => setMapMode('view_places')}>
               <Text style={styles.menuSecondaryText}>View saved places</Text>
             </TouchableOpacity>
+
+            <TouchableOpacity 
+              style={[styles.menuSecondaryButton, { marginTop: 8 }]} 
+              onPress={() => selectedCity && handleDeleteCity(selectedCity)}
+            >
+              <Text style={[styles.menuSecondaryText, { color: '#ff3b30' }]}>Remove city from map</Text>
+            </TouchableOpacity>
             
             <TouchableOpacity style={[styles.menuSecondaryButton, { marginTop: 16, borderBottomWidth: 0 }]} onPress={() => setMapMode('default')}>
-              <Text style={[styles.menuSecondaryText, { color: '#ff3b30' }]}>Close</Text>
+              <Text style={[styles.menuSecondaryText, { color: '#666' }]}>Close</Text>
             </TouchableOpacity>
           </View>
         </View>
       </Modal>
 
       <Modal visible={showAddCityModal} transparent animationType="slide">
-        <View style={styles.modalBackdrop}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.modalBackdrop}
+        >
           <View style={styles.addCitySheet}>
             <View style={styles.sheetHeader}>
               <Text style={styles.sheetTitle}>Select a city</Text>
-              <TouchableOpacity onPress={() => setShowAddCityModal(false)}><Text style={styles.closeText}>Cancel</Text></TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => {
+                  setShowAddCityModal(false);
+                  setCitySearchQuery('');
+                  setCitySearchResults([]);
+                }}
+              >
+                <Text style={styles.closeText}>Cancel</Text>
+              </TouchableOpacity>
             </View>
+
+            <View style={styles.citySearchContainer}>
+              <FontAwesome name="search" size={16} color="#8e8e93" style={styles.citySearchIcon} />
+              <TextInput
+                style={styles.citySearchInput}
+                placeholder="Search city..."
+                placeholderTextColor="#8e8e93"
+                value={citySearchQuery}
+                onChangeText={handleCitySearch}
+                autoCorrect={false}
+                autoCapitalize="none"
+                clearButtonMode="while-editing"
+              />
+              {isSearchingCity && (
+                <ActivityIndicator size="small" color="#007AFF" style={{ marginRight: 6 }} />
+              )}
+              {citySearchQuery.length > 0 && (
+                <TouchableOpacity
+                  onPress={() => {
+                    setCitySearchQuery('');
+                    setCitySearchResults([]);
+                  }}
+                  style={styles.clearSearchButton}
+                >
+                  <FontAwesome name="times-circle" size={16} color="#8e8e93" />
+                </TouchableOpacity>
+              )}
+            </View>
+
             <FlatList
-              data={availableCitiesToAdd}
+              data={combinedCitiesToAdd}
               keyExtractor={(item) => item.id}
+              keyboardShouldPersistTaps="handled"
               renderItem={({ item }) => (
                 <TouchableOpacity style={styles.cityListItem} onPress={() => handleAddNewCity(item)}>
                   <Text style={styles.cityListText}>{item.name}</Text>
                 </TouchableOpacity>
               )}
+              ListEmptyComponent={
+                <View style={styles.emptyListContainer}>
+                  {isSearchingCity ? (
+                    <ActivityIndicator size="small" color="#007AFF" />
+                  ) : (
+                    <Text style={styles.emptyListText}>No cities found</Text>
+                  )}
+                </View>
+              }
             />
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       <Modal visible={mapMode === 'view_places'} transparent animationType="slide">
@@ -367,6 +590,7 @@ const handleOSMSearch = async (text: string) => {
               cityName={selectedCity.name}
               coupleId={myCoupleId}
               onClose={() => setMapMode('default')}
+              onPlacesUpdated={() => loadCitiesAndPlaces(myCoupleId)}
             />
           )}
         </View>
@@ -422,10 +646,16 @@ const styles = StyleSheet.create({
   menuSecondaryButton: { padding: 16, borderBottomWidth: 1, borderBottomColor: '#eee', alignItems: 'center' },
   menuSecondaryText: { color: '#007AFF', fontSize: 16, fontWeight: '600' },
   
-  addCitySheet: { height: '60%', backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 24 },
-  sheetHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
+  addCitySheet: { height: '75%', backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 24 },
+  sheetHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
   sheetTitle: { fontSize: 22, fontWeight: 'bold' },
   closeText: { fontSize: 16, color: '#007AFF', fontWeight: '600' },
+  citySearchContainer: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#f2f2f7', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 12 },
+  citySearchIcon: { marginRight: 8 },
+  citySearchInput: { flex: 1, fontSize: 16, color: '#333', paddingVertical: 0 },
+  clearSearchButton: { padding: 4 },
   cityListItem: { paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#eee' },
-  cityListText: { fontSize: 18, color: '#333' }
+  cityListText: { fontSize: 18, color: '#333' },
+  emptyListContainer: { paddingVertical: 32, alignItems: 'center' },
+  emptyListText: { fontSize: 16, color: '#8e8e93' }
 });
