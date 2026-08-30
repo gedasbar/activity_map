@@ -1,4 +1,4 @@
-import { addDoc, collection, doc, getDoc, getDocs, query, setDoc, where } from 'firebase/firestore';
+import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, query, setDoc, where } from 'firebase/firestore';
 import { db } from '../config/firebaseConfig';
 import { UserProfile, VisitedLog } from '../models/types';
 
@@ -42,6 +42,12 @@ export const linkCoupleAccounts = async (myUid: string, sharedCode: string) => {
 export const saveMemoryLog = async (log: Omit<VisitedLog, 'id'>) => {
   const logsRef = collection(db, 'visited_logs');
   await addDoc(logsRef, log);
+};
+
+// 4b. Delete a memory log
+export const deleteMemoryLog = async (logId: string) => {
+  const logRef = doc(db, 'visited_logs', logId);
+  await deleteDoc(logRef);
 };
 
 // 5. Fetch all memories for a specific city and couple
@@ -90,6 +96,27 @@ export const getUnlockedCities = async (coupleId: string): Promise<any[]> => {
   });
   return cities;
 };
+
+// Ištrina atrakintą miestą ir visus jo įrašus bei vietas
+export const deleteUnlockedCity = async (coupleId: string, cityId: string) => {
+  const unlockedRef = collection(db, 'unlocked_cities');
+  const qCity = query(unlockedRef, where('coupleId', '==', coupleId), where('cityId', '==', cityId));
+  const citySnap = await getDocs(qCity);
+  const deleteCityPromises = citySnap.docs.map(d => deleteDoc(d.ref));
+  await Promise.all(deleteCityPromises);
+
+  const placesRef = collection(db, 'saved_places');
+  const qPlaces = query(placesRef, where('coupleId', '==', coupleId), where('cityId', '==', cityId));
+  const placesSnap = await getDocs(qPlaces);
+  const deletePlacePromises = placesSnap.docs.map(d => deleteDoc(d.ref));
+  await Promise.all(deletePlacePromises);
+
+  const logsRef = collection(db, 'visited_logs');
+  const qLogs = query(logsRef, where('coupleId', '==', coupleId), where('cityId', '==', cityId));
+  const logsSnap = await getDocs(qLogs);
+  const deleteLogPromises = logsSnap.docs.map(d => deleteDoc(d.ref));
+  await Promise.all(deleteLogPromises);
+};
 // --- KONKREČIŲ VIETŲ (PLACES) FUNKCIJOS ---
 
 // 1. Išsaugo naują konkrečią vietą mieste
@@ -123,6 +150,24 @@ export const getCityPlaces = async (coupleId: string, cityId: string): Promise<a
   });
   
   return places.sort((a, b) => b.addedAt - a.addedAt);
+};
+
+// 2b. Ištrina išsaugotą vietą ir jos atsiminimus
+export const deleteSavedPlace = async (placeDocId: string, coupleId?: string, placeId?: string) => {
+  const placeRef = doc(db, 'saved_places', placeDocId);
+  await deleteDoc(placeRef);
+
+  if (coupleId && placeId) {
+    const logsRef = collection(db, 'visited_logs');
+    const q = query(
+      logsRef,
+      where('coupleId', '==', coupleId),
+      where('placeId', '==', placeId)
+    );
+    const snapshot = await getDocs(q);
+    const deletePromises = snapshot.docs.map(d => deleteDoc(d.ref));
+    await Promise.all(deletePromises);
+  }
 };
 
 // 3. Gauna atsiminimus konkrečiai vietai (vietoj viso miesto)
