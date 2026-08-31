@@ -1,8 +1,13 @@
 import { FontAwesome } from '@expo/vector-icons';
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, FlatList, StyleSheet, Text, TextInput, TouchableOpacity, View, Image, Modal } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
 import { auth } from '../config/firebaseConfig';
 import { deleteMemoryLog, deleteSavedPlace, getCityPlaces, getPlaceMemories, saveMemoryLog } from '../services/firestoreService';
+
+// --- CLOUDINARY CONFIG ---
+const CLOUDINARY_URL = 'https://api.cloudinary.com/v1_1/YOUR_CLOUD_NAME/image/upload';
+const UPLOAD_PRESET = 'YOUR_UPLOAD_PRESET';
 
 interface Props {
   cityId: string;
@@ -23,6 +28,9 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
   const [memories, setMemories] = useState<any[]>([]);
   const [isSavingMemory, setIsSavingMemory] = useState(false);
 
+  const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  const [expandedImage, setExpandedImage] = useState<string | null>(null); // State for full-screen image
+
   useEffect(() => {
     loadSavedPlaces();
   }, [cityId]);
@@ -41,165 +49,246 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
     setMemories(fetchedMemories);
   };
 
-  const handleSaveMemory = async () => {
-    if (!note.trim() || !auth.currentUser || !activePlace) return;
-    
-    setIsSavingMemory(true);
-    const newLog = {
-      coupleId: coupleId,
-      cityId: cityId,
-      placeId: activePlace.placeId,
-      notes: note.trim(),
-      dateVisited: Date.now(),
-      photoUrls: [], 
-      createdBy: auth.currentUser.uid,
-    };
+  const pickImage = async () => {
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      quality: 0.7,
+    });
 
-    await saveMemoryLog(newLog);
-    setNote('');
-    const fetchedMemories = await getPlaceMemories(coupleId, activePlace.placeId);
-    setMemories(fetchedMemories);
-    setIsSavingMemory(false);
+    if (!result.canceled) {
+      setSelectedImage(result.assets[0].uri);
+    }
+  };
+
+  const uploadImageToCloudinary = async (imageUri: string) => {
+    const data = new FormData();
+    data.append('file', {
+      uri: imageUri,
+      type: 'image/jpeg',
+      name: 'upload.jpg',
+    } as any);
+    data.append('upload_preset', UPLOAD_PRESET);
+
+    const response = await fetch(CLOUDINARY_URL, {
+      method: 'POST',
+      body: data,
+    });
+    const result = await response.json();
+    return result.secure_url;
+  };
+
+  const handleSaveMemory = async () => {
+    if (!auth.currentUser || !activePlace) return;
+    if (!note.trim() && !selectedImage) return;
+
+    setIsSavingMemory(true);
+    let uploadedPhotoUrl = '';
+
+    try {
+      if (selectedImage) {
+        uploadedPhotoUrl = await uploadImageToCloudinary(selectedImage);
+      }
+
+      const newLog = {
+        coupleId: coupleId,
+        cityId: cityId,
+        placeId: activePlace.placeId,
+        notes: note.trim(),
+        dateVisited: Date.now(),
+        photoUrls: uploadedPhotoUrl ? [uploadedPhotoUrl] : [],
+        createdBy: auth.currentUser.uid,
+      };
+
+      await saveMemoryLog(newLog);
+
+      setNote('');
+      setSelectedImage(null);
+
+      const fetchedMemories = await getPlaceMemories(coupleId, activePlace.placeId);
+      setMemories(fetchedMemories);
+    } catch (error: any) {
+      Alert.alert("Upload Error", "Failed to save the memory or image.");
+      console.error(error);
+    } finally {
+      setIsSavingMemory(false);
+    }
   };
 
   const handleDeletePlace = (place: any) => {
     Alert.alert(
-      'Delete Place',
-      `Are you sure you want to delete "${place.name}" and all its recorded memories?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await deleteSavedPlace(place.id, coupleId, place.placeId);
-              await loadSavedPlaces();
-              onPlacesUpdated?.();
-            } catch (err: any) {
-              Alert.alert('Error', err.message || 'Could not delete place');
-            }
+        'Delete Place',
+        `Are you sure you want to delete "${place.name}" and all its recorded memories?`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Delete',
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                await deleteSavedPlace(place.id, coupleId, place.placeId);
+                await loadSavedPlaces();
+                onPlacesUpdated?.();
+              } catch (err: any) {
+                Alert.alert('Error', err.message || 'Could not delete place');
+              }
+            },
           },
-        },
-      ]
+        ]
     );
   };
 
   const handleDeleteMemory = (log: any) => {
     Alert.alert(
-      'Delete Memory',
-      'Are you sure you want to delete this recorded memory?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            if (!log.id || !activePlace) return;
-            try {
-              await deleteMemoryLog(log.id);
-              const fetchedMemories = await getPlaceMemories(coupleId, activePlace.placeId);
-              setMemories(fetchedMemories);
-            } catch (err: any) {
-              Alert.alert('Error', err.message || 'Could not delete record');
-            }
+        'Delete Memory',
+        'Are you sure you want to delete this recorded memory?',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Delete',
+            style: 'destructive',
+            onPress: async () => {
+              if (!log.id || !activePlace) return;
+              try {
+                await deleteMemoryLog(log.id);
+                const fetchedMemories = await getPlaceMemories(coupleId, activePlace.placeId);
+                setMemories(fetchedMemories);
+              } catch (err: any) {
+                Alert.alert('Error', err.message || 'Could not delete record');
+              }
+            },
           },
-        },
-      ]
+        ]
     );
   };
 
   if (viewMode === 'city') {
     return (
+        <View style={styles.container}>
+          <View style={styles.header}>
+            <Text style={styles.cityName}>{cityName} Places</Text>
+            <TouchableOpacity onPress={onClose}>
+              <Text style={styles.closeText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+
+          {isLoadingPlaces ? (
+              <ActivityIndicator style={styles.loader} color="#007AFF" />
+          ) : (
+              <FlatList
+                  data={savedPlaces}
+                  keyExtractor={(item) => item.id}
+                  renderItem={({ item }) => (
+                      <View style={styles.savedPlaceCard}>
+                        <TouchableOpacity style={styles.savedPlaceContent} onPress={() => openPlace(item)}>
+                          <Text style={styles.savedPlaceName}>{item.name}</Text>
+                          <Text style={styles.savedPlaceDate}>Added: {new Date(item.addedAt).toLocaleDateString()}</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                            style={styles.deleteButton}
+                            onPress={() => handleDeletePlace(item)}
+                            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                        >
+                          <FontAwesome name="trash-o" size={20} color="#ff3b30" />
+                        </TouchableOpacity>
+                      </View>
+                  )}
+                  ListEmptyComponent={
+                    <Text style={styles.emptyText}>No saved places yet. Use the map search to add some!</Text>
+                  }
+              />
+          )}
+        </View>
+    );
+  }
+
+  return (
       <View style={styles.container}>
         <View style={styles.header}>
-          <Text style={styles.cityName}>{cityName} Places</Text>
+          <TouchableOpacity onPress={() => setViewMode('city')}>
+            <Text style={styles.backText}>← Back</Text>
+          </TouchableOpacity>
+          <Text style={styles.cityName} numberOfLines={1}>{activePlace?.name}</Text>
           <TouchableOpacity onPress={onClose}>
             <Text style={styles.closeText}>Close</Text>
           </TouchableOpacity>
         </View>
 
-        {isLoadingPlaces ? (
-          <ActivityIndicator style={styles.loader} color="#007AFF" />
-        ) : (
-          <FlatList
-            data={savedPlaces}
-            keyExtractor={(item) => item.id}
-            renderItem={({ item }) => (
-              <View style={styles.savedPlaceCard}>
-                <TouchableOpacity style={styles.savedPlaceContent} onPress={() => openPlace(item)}>
-                  <Text style={styles.savedPlaceName}>{item.name}</Text>
-                  <Text style={styles.savedPlaceDate}>Added: {new Date(item.addedAt).toLocaleDateString()}</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.deleteButton}
-                  onPress={() => handleDeletePlace(item)}
-                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                >
-                  <FontAwesome name="trash-o" size={20} color="#ff3b30" />
+        <View style={styles.inputArea}>
+          <TextInput
+              style={styles.input}
+              placeholder="What did you do here?"
+              value={note}
+              onChangeText={setNote}
+              multiline
+          />
+
+          {selectedImage && (
+              <View style={styles.imagePreviewContainer}>
+                <Image source={{ uri: selectedImage }} style={styles.imagePreview} />
+                <TouchableOpacity style={styles.removeImageBtn} onPress={() => setSelectedImage(null)}>
+                  <Text style={styles.removeImageText}>✕</Text>
                 </TouchableOpacity>
               </View>
-            )}
-            ListEmptyComponent={
-              <Text style={styles.emptyText}>No saved places yet. Use the map search to add some!</Text>
-            }
-          />
-        )}
-      </View>
-    );
-  }
+          )}
 
-  return (
-    <View style={styles.container}>
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => setViewMode('city')}>
-          <Text style={styles.backText}>← Back</Text>
-        </TouchableOpacity>
-        <Text style={styles.cityName} numberOfLines={1}>{activePlace?.name}</Text>
-        <TouchableOpacity onPress={onClose}>
-          <Text style={styles.closeText}>Close</Text>
-        </TouchableOpacity>
-      </View>
+          <View style={styles.actionRow}>
+            <TouchableOpacity style={styles.photoButton} onPress={pickImage}>
+              <Text style={styles.photoButtonText}>Add Photo</Text>
+            </TouchableOpacity>
 
-      <View style={styles.inputContainer}>
-        <TextInput
-          style={styles.input}
-          placeholder="What did you do here?"
-          value={note}
-          onChangeText={setNote}
-          multiline
-        />
-        <TouchableOpacity 
-          style={[styles.saveButton, !note.trim() && styles.saveButtonDisabled]} 
-          onPress={handleSaveMemory}
-          disabled={!note.trim() || isSavingMemory}
-        >
-          <Text style={styles.saveButtonText}>{isSavingMemory ? '...' : 'Save'}</Text>
-        </TouchableOpacity>
-      </View>
-
-      <Text style={styles.sectionTitle}>Memories</Text>
-      <FlatList
-        data={memories}
-        keyExtractor={(item) => item.id || Math.random().toString()}
-        renderItem={({ item }) => (
-          <View style={styles.logCard}>
-            <View style={styles.logCardHeader}>
-              <Text style={styles.dateText}>{new Date(item.dateVisited).toLocaleDateString()}</Text>
-              <TouchableOpacity
-                style={styles.deleteLogButton}
-                onPress={() => handleDeleteMemory(item)}
-                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-              >
-                <FontAwesome name="trash-o" size={16} color="#ff3b30" />
-              </TouchableOpacity>
-            </View>
-            <Text style={styles.noteText}>{item.notes}</Text>
+            <TouchableOpacity
+                style={[styles.saveButton, (!note.trim() && !selectedImage) && styles.saveButtonDisabled]}
+                onPress={handleSaveMemory}
+                disabled={(!note.trim() && !selectedImage) || isSavingMemory}
+            >
+              <Text style={styles.saveButtonText}>{isSavingMemory ? 'Saving...' : 'Save'}</Text>
+            </TouchableOpacity>
           </View>
-        )}
-        ListEmptyComponent={<Text style={styles.emptyText}>No memories yet. Add your first!</Text>}
-      />
-    </View>
+        </View>
+
+        <Text style={styles.sectionTitle}>Memories</Text>
+        <FlatList
+            data={memories}
+            keyExtractor={(item) => item.id || Math.random().toString()}
+            renderItem={({ item }) => (
+                <View style={styles.logCard}>
+                  <View style={styles.logCardHeader}>
+                    <Text style={styles.dateText}>{new Date(item.dateVisited).toLocaleDateString()}</Text>
+                    <TouchableOpacity
+                        style={styles.deleteLogButton}
+                        onPress={() => handleDeleteMemory(item)}
+                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                    >
+                      <FontAwesome name="trash-o" size={16} color="#ff3b30" />
+                    </TouchableOpacity>
+                  </View>
+
+                  {/* Clickable Image Thumbnail */}
+                  {item.photoUrls && item.photoUrls.length > 0 && (
+                      <TouchableOpacity onPress={() => setExpandedImage(item.photoUrls[0])} activeOpacity={0.9}>
+                        <Image source={{ uri: item.photoUrls[0] }} style={styles.memoryImage} resizeMode="cover" />
+                      </TouchableOpacity>
+                  )}
+
+                  {item.notes ? <Text style={styles.noteText}>{item.notes}</Text> : null}
+                </View>
+            )}
+            ListEmptyComponent={<Text style={styles.emptyText}>No memories yet. Add your first!</Text>}
+        />
+
+        {/* Full-Screen Image Viewer Modal */}
+        <Modal visible={!!expandedImage} transparent={true} animationType="fade" onRequestClose={() => setExpandedImage(null)}>
+          <View style={styles.fullScreenImageContainer}>
+            <TouchableOpacity style={styles.closeFullScreenButton} onPress={() => setExpandedImage(null)}>
+              <FontAwesome name="times" size={28} color="#fff" />
+            </TouchableOpacity>
+            {expandedImage && (
+                <Image source={{ uri: expandedImage }} style={styles.fullScreenImage} resizeMode="contain" />
+            )}
+          </View>
+        </Modal>
+      </View>
   );
 }
 
@@ -210,30 +299,36 @@ const styles = StyleSheet.create({
   closeText: { fontSize: 16, color: '#ff3b30', fontWeight: '600' },
   backText: { fontSize: 16, color: '#007AFF', fontWeight: '600' },
   sectionTitle: { fontSize: 18, fontWeight: '600', marginBottom: 12, color: '#333' },
-  savedPlaceCard: { 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    backgroundColor: '#f0f8ff', 
-    borderRadius: 12, 
-    marginBottom: 10, 
-    borderWidth: 1, 
-    borderColor: '#ccebff',
-    padding: 16
-  },
+  savedPlaceCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#f0f8ff', borderRadius: 12, marginBottom: 10, borderWidth: 1, borderColor: '#ccebff', padding: 16 },
   savedPlaceContent: { flex: 1, marginRight: 10 },
   savedPlaceName: { fontSize: 18, fontWeight: 'bold', color: '#005999' },
   savedPlaceDate: { fontSize: 12, color: '#666', marginTop: 4 },
   deleteButton: { padding: 8, justifyContent: 'center', alignItems: 'center' },
-  inputContainer: { flexDirection: 'row', alignItems: 'flex-end', marginBottom: 24 },
-  input: { flex: 1, backgroundColor: '#f0f0f0', borderRadius: 8, padding: 12, minHeight: 40, maxHeight: 100, marginRight: 12 },
-  saveButton: { backgroundColor: '#34c759', paddingHorizontal: 16, paddingVertical: 12, borderRadius: 8 },
+
+  inputArea: { marginBottom: 24, backgroundColor: '#f9f9f9', padding: 12, borderRadius: 12, borderWidth: 1, borderColor: '#eee' },
+  input: { backgroundColor: '#fff', borderRadius: 8, padding: 12, minHeight: 60, maxHeight: 120, marginBottom: 12, borderWidth: 1, borderColor: '#e0e0e0' },
+  actionRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  photoButton: { backgroundColor: '#e8e8e8', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 8 },
+  photoButtonText: { color: '#333', fontWeight: '600' },
+  saveButton: { backgroundColor: '#34c759', paddingHorizontal: 24, paddingVertical: 12, borderRadius: 8 },
   saveButtonDisabled: { backgroundColor: '#a1e4b3' },
   saveButtonText: { color: '#fff', fontWeight: 'bold' },
+  imagePreviewContainer: { position: 'relative', marginBottom: 12, alignSelf: 'flex-start' },
+  imagePreview: { width: 100, height: 100, borderRadius: 8 },
+  removeImageBtn: { position: 'absolute', top: -5, right: -5, backgroundColor: 'red', width: 24, height: 24, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
+  removeImageText: { color: 'white', fontWeight: 'bold', fontSize: 12 },
+
   logCard: { backgroundColor: '#f8f9fa', padding: 16, borderRadius: 12, marginBottom: 12, borderWidth: 1, borderColor: '#eee' },
-  logCardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
+  logCardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
   deleteLogButton: { padding: 4 },
   dateText: { fontSize: 12, color: '#888' },
+  memoryImage: { width: '100%', height: 200, borderRadius: 8, marginBottom: 12, backgroundColor: '#e1e4e8' },
   noteText: { fontSize: 16, color: '#333' },
   loader: { marginVertical: 20 },
-  emptyText: { textAlign: 'center', color: '#999', marginTop: 20, fontStyle: 'italic' }
+  emptyText: { textAlign: 'center', color: '#999', marginTop: 20, fontStyle: 'italic' },
+
+  // Full Screen Image Viewer Styles
+  fullScreenImageContainer: { flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.95)', justifyContent: 'center', alignItems: 'center' },
+  closeFullScreenButton: { position: 'absolute', top: 50, right: 20, zIndex: 10, padding: 16 },
+  fullScreenImage: { width: '100%', height: '100%' },
 });
