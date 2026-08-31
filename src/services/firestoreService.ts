@@ -202,3 +202,20 @@ export const updatePlaceRating = async (placeDocId: string, rating: number) => {
   const placeRef = doc(db, 'saved_places', placeDocId);
   await updateDoc(placeRef, { rating });
 };
+
+export const getAllCoupleMemories = async (coupleId: string): Promise<any[]> => {
+  const logsRef = collection(db, 'visited_logs'); // Change this if your collection name is different
+  const q = query(logsRef, where('coupleId', '==', coupleId));
+  const snapshot = await getDocs(q);
+  const logs: any[] = [];
+  snapshot.forEach(doc => {
+    logs.push({ id: doc.id, ...doc.data() });
+  });
+  // Sort from newest to oldest
+  return logs.sort((a, b) => b.dateVisited - a.dateVisited);
+};
+
+export const updateMemoryDate = async (logId: string, newDateTimestamp: number) => {
+  const logRef = doc(db, 'visited_logs', logId);
+  await updateDoc(logRef, { dateVisited: newDateTimestamp });
+};
