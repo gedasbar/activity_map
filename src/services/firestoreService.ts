@@ -1,4 +1,4 @@
-import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, query, setDoc, where } from 'firebase/firestore';
+import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, query, setDoc, updateDoc,where } from 'firebase/firestore';
 import { db } from '../config/firebaseConfig';
 import { UserProfile, VisitedLog } from '../models/types';
 
@@ -196,4 +196,9 @@ export const getAllSavedPlaces = async (coupleId: string): Promise<any[]> => {
     places.push({ id: doc.id, ...doc.data() });
   });
   return places;
+};
+
+export const updatePlaceRating = async (placeDocId: string, rating: number) => {
+  const placeRef = doc(db, 'saved_places', placeDocId);
+  await updateDoc(placeRef, { rating });
 };
