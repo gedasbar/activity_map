@@ -3,11 +3,11 @@ import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, FlatList, StyleSheet, Text, TextInput, TouchableOpacity, View, Image, Modal } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { auth } from '../config/firebaseConfig';
-import { deleteMemoryLog, deleteSavedPlace, getCityPlaces, getPlaceMemories, saveMemoryLog } from '../services/firestoreService';
+import { deleteMemoryLog, deleteSavedPlace, getCityPlaces, getPlaceMemories, saveMemoryLog, updatePlaceRating } from '../services/firestoreService';
 
 // --- CLOUDINARY CONFIG ---
-const CLOUDINARY_URL = 'https://api.cloudinary.com/v1_1/YOUR_CLOUD_NAME/image/upload';
-const UPLOAD_PRESET = 'YOUR_UPLOAD_PRESET';
+const CLOUDINARY_URL = 'https://api.cloudinary.com/v1_1/jpxtr4kd/image/upload';
+const UPLOAD_PRESET = 'pind_map';
 
 interface Props {
   cityId: string;
@@ -29,7 +29,11 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
   const [isSavingMemory, setIsSavingMemory] = useState(false);
 
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
-  const [expandedImage, setExpandedImage] = useState<string | null>(null); // State for full-screen image
+  const [expandedImage, setExpandedImage] = useState<string | null>(null);
+
+  // Rating State
+  const [ratingPlace, setRatingPlace] = useState<any>(null);
+  const [tempRating, setTempRating] = useState<number>(0);
 
   useEffect(() => {
     loadSavedPlaces();
@@ -162,6 +166,22 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
     );
   };
 
+  const openRatingModal = (place: any) => {
+    setRatingPlace(place);
+    setTempRating(place.rating || 0);
+  };
+
+  const saveRating = async () => {
+    if (!ratingPlace) return;
+    try {
+      await updatePlaceRating(ratingPlace.id, tempRating);
+      await loadSavedPlaces();
+      setRatingPlace(null);
+    } catch (error) {
+      Alert.alert("Error", "Could not save rating.");
+    }
+  };
+
   if (viewMode === 'city') {
     return (
         <View style={styles.container}>
@@ -184,13 +204,33 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
                           <Text style={styles.savedPlaceName}>{item.name}</Text>
                           <Text style={styles.savedPlaceDate}>Added: {new Date(item.addedAt).toLocaleDateString()}</Text>
                         </TouchableOpacity>
-                        <TouchableOpacity
-                            style={styles.deleteButton}
-                            onPress={() => handleDeletePlace(item)}
-                            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                        >
-                          <FontAwesome name="trash-o" size={20} color="#ff3b30" />
-                        </TouchableOpacity>
+
+                        <View style={styles.actionButtonsContainer}>
+                          {/* Rating Button */}
+                          <TouchableOpacity
+                              style={styles.actionButton}
+                              onPress={() => openRatingModal(item)}
+                              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                          >
+                            {item.rating ? (
+                                <View style={styles.ratedBadge}>
+                                  <Text style={styles.ratedNumber}>{item.rating}</Text>
+                                  <FontAwesome name="star-o" size={20} color="#333" style={{ fontWeight: 'bold' }} />
+                                </View>
+                            ) : (
+                                <FontAwesome name="star-o" size={20} color="#999" />
+                            )}
+                          </TouchableOpacity>
+
+                          {/* Delete Button */}
+                          <TouchableOpacity
+                              style={styles.actionButton}
+                              onPress={() => handleDeletePlace(item)}
+                              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                          >
+                            <FontAwesome name="trash-o" size={20} color="#ff3b30" />
+                          </TouchableOpacity>
+                        </View>
                       </View>
                   )}
                   ListEmptyComponent={
@@ -198,6 +238,47 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
                   }
               />
           )}
+
+          {/* Custom Rating Dialog */}
+          <Modal visible={!!ratingPlace} transparent animationType="fade">
+            <View style={styles.modalBackdrop}>
+              <View style={styles.ratingDialog}>
+                <Text style={styles.ratingTitle}>Rate</Text>
+                <Text style={styles.ratingSubtitle} numberOfLines={1}>{ratingPlace?.name}</Text>
+
+                <View style={styles.starsRow}>
+                  {[1, 2, 3, 4, 5].map((star) => (
+                      <View key={star} style={styles.starContainer}>
+                        {/* Background Star Icon */}
+                        <View style={styles.starIconWrapper} pointerEvents="none">
+                          <FontAwesome
+                              name={tempRating >= star ? 'star' : tempRating >= star - 0.5 ? 'star-half-o' : 'star-o'}
+                              size={36}
+                              color="#333"
+                          />
+                        </View>
+                        {/* Invisible Touch Zones for 0.5 precision */}
+                        <View style={styles.starTouchZones}>
+                          <TouchableOpacity style={styles.halfStarZone} onPress={() => setTempRating(star - 0.5)} />
+                          <TouchableOpacity style={styles.halfStarZone} onPress={() => setTempRating(star)} />
+                        </View>
+                      </View>
+                  ))}
+                </View>
+
+                <Text style={styles.ratingDisplay}>{tempRating > 0 ? tempRating : 'Select a rating'}</Text>
+
+                <View style={styles.ratingActionRow}>
+                  <TouchableOpacity style={styles.ratingCancelBtn} onPress={() => setRatingPlace(null)}>
+                    <Text style={styles.ratingCancelText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.ratingDoneBtn} onPress={saveRating}>
+                    <Text style={styles.ratingDoneText}>Done</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+          </Modal>
         </View>
     );
   }
@@ -234,7 +315,7 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
 
           <View style={styles.actionRow}>
             <TouchableOpacity style={styles.photoButton} onPress={pickImage}>
-              <Text style={styles.photoButtonText}>Add Photo</Text>
+              <Text style={styles.photoButtonText}>Photo</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -264,7 +345,6 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
                     </TouchableOpacity>
                   </View>
 
-                  {/* Clickable Image Thumbnail */}
                   {item.photoUrls && item.photoUrls.length > 0 && (
                       <TouchableOpacity onPress={() => setExpandedImage(item.photoUrls[0])} activeOpacity={0.9}>
                         <Image source={{ uri: item.photoUrls[0] }} style={styles.memoryImage} resizeMode="cover" />
@@ -277,7 +357,6 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
             ListEmptyComponent={<Text style={styles.emptyText}>No memories yet. Add your first!</Text>}
         />
 
-        {/* Full-Screen Image Viewer Modal */}
         <Modal visible={!!expandedImage} transparent={true} animationType="fade" onRequestClose={() => setExpandedImage(null)}>
           <View style={styles.fullScreenImageContainer}>
             <TouchableOpacity style={styles.closeFullScreenButton} onPress={() => setExpandedImage(null)}>
@@ -299,11 +378,16 @@ const styles = StyleSheet.create({
   closeText: { fontSize: 16, color: '#ff3b30', fontWeight: '600' },
   backText: { fontSize: 16, color: '#007AFF', fontWeight: '600' },
   sectionTitle: { fontSize: 18, fontWeight: '600', marginBottom: 12, color: '#333' },
+
   savedPlaceCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#f0f8ff', borderRadius: 12, marginBottom: 10, borderWidth: 1, borderColor: '#ccebff', padding: 16 },
   savedPlaceContent: { flex: 1, marginRight: 10 },
   savedPlaceName: { fontSize: 18, fontWeight: 'bold', color: '#005999' },
   savedPlaceDate: { fontSize: 12, color: '#666', marginTop: 4 },
-  deleteButton: { padding: 8, justifyContent: 'center', alignItems: 'center' },
+
+  actionButtonsContainer: { flexDirection: 'row', alignItems: 'center' },
+  actionButton: { padding: 8, marginLeft: 4, justifyContent: 'center', alignItems: 'center' },
+  ratedBadge: { flexDirection: 'row', alignItems: 'center' },
+  ratedNumber: { fontSize: 16, fontWeight: 'bold', color: '#333', marginRight: 4 },
 
   inputArea: { marginBottom: 24, backgroundColor: '#f9f9f9', padding: 12, borderRadius: 12, borderWidth: 1, borderColor: '#eee' },
   input: { backgroundColor: '#fff', borderRadius: 8, padding: 12, minHeight: 60, maxHeight: 120, marginBottom: 12, borderWidth: 1, borderColor: '#e0e0e0' },
@@ -327,8 +411,24 @@ const styles = StyleSheet.create({
   loader: { marginVertical: 20 },
   emptyText: { textAlign: 'center', color: '#999', marginTop: 20, fontStyle: 'italic' },
 
-  // Full Screen Image Viewer Styles
   fullScreenImageContainer: { flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.95)', justifyContent: 'center', alignItems: 'center' },
   closeFullScreenButton: { position: 'absolute', top: 50, right: 20, zIndex: 10, padding: 16 },
   fullScreenImage: { width: '100%', height: '100%' },
+
+  // Rating Modal Styles
+  modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
+  ratingDialog: { width: '80%', backgroundColor: '#fff', borderRadius: 16, padding: 24, alignItems: 'center' },
+  ratingTitle: { fontSize: 20, fontWeight: 'bold', marginBottom: 4 },
+  ratingSubtitle: { fontSize: 14, color: '#666', marginBottom: 24, textAlign: 'center' },
+  starsRow: { flexDirection: 'row', justifyContent: 'center', marginBottom: 16 },
+  starContainer: { width: 44, height: 44, marginHorizontal: 2, position: 'relative' },
+  starIconWrapper: { position: 'absolute', width: '100%', height: '100%', justifyContent: 'center', alignItems: 'center' },
+  starTouchZones: { flex: 1, flexDirection: 'row' },
+  halfStarZone: { flex: 1, height: '100%' },
+  ratingDisplay: { fontSize: 18, fontWeight: 'bold', color: '#333', marginBottom: 24 },
+  ratingActionRow: { flexDirection: 'row', width: '100%', justifyContent: 'space-between', borderTopWidth: 1, borderTopColor: '#eee', paddingTop: 16 },
+  ratingCancelBtn: { flex: 1, alignItems: 'center', paddingVertical: 8 },
+  ratingCancelText: { color: '#ff3b30', fontSize: 16, fontWeight: '600' },
+  ratingDoneBtn: { flex: 1, alignItems: 'center', paddingVertical: 8, borderLeftWidth: 1, borderLeftColor: '#eee' },
+  ratingDoneText: { color: '#007AFF', fontSize: 16, fontWeight: 'bold' }
 });
