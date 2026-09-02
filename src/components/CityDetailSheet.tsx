@@ -1,6 +1,6 @@
 import { FontAwesome } from '@expo/vector-icons';
-import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, StyleSheet, Text, TextInput, TouchableOpacity, View, Image, Modal, Platform } from 'react-native';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, FlatList, StyleSheet, Text, TextInput, TouchableOpacity, View, Image, Modal, Platform, PanResponder, Animated, Dimensions } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { BlurView } from 'expo-blur';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -9,6 +9,9 @@ import { deleteMemoryLog, deleteSavedPlace, getCityPlaces, getPlaceMemories, sav
 
 const CLOUDINARY_URL = 'https://api.cloudinary.com/v1_1/jpxtr4kd/image/upload';
 const UPLOAD_PRESET = 'pind_map';
+
+const { height: SCREEN_HEIGHT } = Dimensions.get('window');
+const AnimatedBlurView = Animated.createAnimatedComponent(BlurView);
 
 interface Props {
   cityId: string;
@@ -29,7 +32,6 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
   const [memories, setMemories] = useState<any[]>([]);
   const [isSavingMemory, setIsSavingMemory] = useState(false);
 
-  // --- NEW: Multiple Assets State ---
   const [selectedAssets, setSelectedAssets] = useState<ImagePicker.ImagePickerAsset[]>([]);
   const [expandedImage, setExpandedImage] = useState<string | null>(null);
 
@@ -42,7 +44,34 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
   const [editingLogId, setEditingLogId] = useState<string | null>(null);
   const [editDate, setEditDate] = useState<Date>(new Date());
 
+  // --- DYNAMIC SLIDE-TO-CLOSE ANIMATION ---
+  const slideAnim = useRef(new Animated.Value(0)).current;
+
+  const sheetPanResponder = useMemo(() => PanResponder.create({
+    onStartShouldSetPanResponder: () => true, // Instantly register touch on the drag pill
+    onMoveShouldSetPanResponder: (_, gestureState) => gestureState.dy > 5, // Only trigger on downward swipe
+    onPanResponderMove: (_, gestureState) => {
+      if (gestureState.dy > 0) slideAnim.setValue(gestureState.dy);
+    },
+    onPanResponderRelease: (_, gestureState) => {
+      if (gestureState.dy > 100 || gestureState.vy > 0.8) {
+        Animated.timing(slideAnim, {
+          toValue: SCREEN_HEIGHT,
+          duration: 250,
+          useNativeDriver: true
+        }).start(() => onClose()); // Close exactly when animation ends (no bounce)
+      } else {
+        Animated.spring(slideAnim, {
+          toValue: 0,
+          useNativeDriver: true
+        }).start();
+      }
+    }
+  }), []);
+
   useEffect(() => {
+    // Reset the animation to the top whenever the sheet is freshly opened
+    slideAnim.setValue(0);
     loadSavedPlaces();
   }, [cityId]);
 
@@ -63,17 +92,15 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
   const pickImage = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
-      allowsMultipleSelection: true, // <-- Enable selecting multiple photos
+      allowsMultipleSelection: true,
       allowsEditing: false,
       quality: 0.7,
       exif: true,
     });
 
     if (!result.canceled) {
-      // Append newly selected assets so they don't overwrite existing ones if they click "Photo" again
       setSelectedAssets(prev => [...prev, ...result.assets]);
 
-      // If they only picked one photo, update the visual UI date picker so they see the EXIF worked
       if (result.assets.length === 1) {
         const asset = result.assets[0];
         if (asset.exif) {
@@ -118,11 +145,8 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
 
     try {
       if (selectedAssets.length > 0) {
-        // Loop through every selected photo and process them as independent memories
         for (const asset of selectedAssets) {
           const uploadedPhotoUrl = await uploadImageToCloudinary(asset.uri);
-
-          // Extract date for THIS specific photo (defaults to UI date if no EXIF found)
           let assetDateMs = visitDate.getTime();
           if (asset.exif) {
             const exifDateStr = asset.exif.DateTimeOriginal || asset.exif.DateTimeDigitized || asset.exif.DateTime;
@@ -140,7 +164,6 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
             }
           }
 
-          // If there is only 1 photo, keep the note. If multiple, ditch the note.
           const finalNote = selectedAssets.length === 1 ? note.trim() : '';
 
           const newLog = {
@@ -156,7 +179,6 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
           await saveMemoryLog(newLog);
         }
       } else {
-        // Text-only memory (no photos)
         const newLog = {
           coupleId: coupleId,
           cityId: cityId,
@@ -169,7 +191,6 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
         await saveMemoryLog(newLog);
       }
 
-      // Reset
       setNote('');
       setSelectedAssets([]);
       setVisitDate(new Date());
@@ -256,12 +277,16 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
 
   if (viewMode === 'city') {
     return (
-        <BlurView intensity={85} tint="dark" style={styles.container}>
-          <View style={styles.header}>
-            <Text style={styles.cityName}>{cityName}</Text>
-            <TouchableOpacity onPress={onClose}>
-              <Text style={styles.closeText}>Close</Text>
-            </TouchableOpacity>
+        <AnimatedBlurView intensity={85} tint="dark" style={[styles.container, { transform: [{ translateY: slideAnim }] }]}>
+
+          <View style={styles.dragArea} {...sheetPanResponder.panHandlers}>
+            <View style={styles.dragPill} />
+            <View style={styles.header}>
+              <Text style={styles.cityName}>{cityName}</Text>
+              <TouchableOpacity onPress={onClose} hitSlop={{top:15, bottom:15, left:15, right:15}}>
+                <Text style={styles.closeText}>Close</Text>
+              </TouchableOpacity>
+            </View>
           </View>
 
           {isLoadingPlaces ? (
@@ -270,6 +295,7 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
               <FlatList
                   data={savedPlaces}
                   keyExtractor={(item) => item.id}
+                  showsVerticalScrollIndicator={false}
                   renderItem={({ item }) => (
                       <View style={styles.savedPlaceCard}>
                         <TouchableOpacity style={styles.savedPlaceContent} onPress={() => openPlace(item)}>
@@ -334,25 +360,27 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
               </BlurView>
             </View>
           </Modal>
-        </BlurView>
+        </AnimatedBlurView>
     );
   }
 
   return (
-      <BlurView intensity={85} tint="dark" style={styles.container}>
-        <View style={styles.header}>
-          <TouchableOpacity onPress={() => setViewMode('city')}>
-            <Text style={styles.backText}>← Back</Text>
-          </TouchableOpacity>
-          <Text style={styles.cityName} numberOfLines={1}>{activePlace?.name}</Text>
-          <TouchableOpacity onPress={onClose}>
-            <Text style={styles.closeText}>Close</Text>
-          </TouchableOpacity>
+      <AnimatedBlurView intensity={85} tint="dark" style={[styles.container, { transform: [{ translateY: slideAnim }] }]}>
+
+        <View style={styles.dragArea} {...sheetPanResponder.panHandlers}>
+          <View style={styles.dragPill} />
+          <View style={styles.header}>
+            <TouchableOpacity onPress={() => setViewMode('city')} hitSlop={{top:15, bottom:15, left:15, right:15}}>
+              <Text style={styles.backText}>← Back</Text>
+            </TouchableOpacity>
+            <Text style={styles.cityName} numberOfLines={1}>{activePlace?.name}</Text>
+            <TouchableOpacity onPress={onClose} hitSlop={{top:15, bottom:15, left:15, right:15}}>
+              <Text style={styles.closeText}>Close</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         <View style={styles.inputArea}>
-
-          {/* Hide Note Input if multiple photos are selected */}
           {selectedAssets.length <= 1 ? (
               <TextInput
                   style={styles.input}
@@ -369,7 +397,6 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
               </View>
           )}
 
-          {/* Render All Selected Images */}
           {selectedAssets.length > 0 && (
               <View style={styles.imagePreviewRow}>
                 {selectedAssets.map((asset, index) => (
@@ -511,13 +538,18 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
             )}
           </View>
         </Modal>
-      </BlurView>
+      </AnimatedBlurView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { height: '85%', borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: 24, overflow: 'hidden' },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 },
+  container: { height: '85%', paddingTop: 12, paddingHorizontal: 24, borderTopLeftRadius: 28, borderTopRightRadius: 28, overflow: 'hidden' },
+
+  // INCREASED DRAG AREA HITBOX
+  dragArea: { width: '100%', alignItems: 'center', paddingTop: 16, paddingBottom: 16, backgroundColor: 'transparent' },
+  dragPill: { width: 40, height: 5, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.3)', marginBottom: 16 },
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', width: '100%', marginBottom: 16 },
+
   cityName: { fontSize: 22, fontWeight: 'bold', flex: 1, textAlign: 'center', marginHorizontal: 10, color: '#fff' },
   closeText: { fontSize: 16, color: '#0a84ff', fontWeight: '600' },
   backText: { fontSize: 16, color: '#0a84ff', fontWeight: '600' },
@@ -535,7 +567,6 @@ const styles = StyleSheet.create({
   inputArea: { marginBottom: 24, backgroundColor: 'rgba(255,255,255,0.05)', padding: 12, borderRadius: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
   input: { backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 12, padding: 14, minHeight: 60, maxHeight: 120, marginBottom: 12, fontSize: 16, color: '#fff' },
 
-  // NEW: Multi-photo notice styles
   multiPhotoNotice: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.05)', padding: 12, borderRadius: 12, marginBottom: 12 },
   multiPhotoText: { color: '#ebebf5', fontSize: 13, flex: 1, lineHeight: 18 },
 
@@ -548,7 +579,6 @@ const styles = StyleSheet.create({
   saveButtonDisabled: { backgroundColor: 'rgba(10, 132, 255, 0.3)' },
   saveButtonText: { color: '#fff', fontWeight: 'bold' },
 
-  // NEW: Horizontal grid styles for multiple thumbnails
   imagePreviewRow: { flexDirection: 'row', flexWrap: 'wrap', marginBottom: 4 },
   imagePreviewContainer: { position: 'relative', marginRight: 12, marginBottom: 12 },
   imagePreview: { width: 70, height: 70, borderRadius: 10 },
