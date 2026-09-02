@@ -29,17 +29,16 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
   const [memories, setMemories] = useState<any[]>([]);
   const [isSavingMemory, setIsSavingMemory] = useState(false);
 
-  const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  // --- NEW: Multiple Assets State ---
+  const [selectedAssets, setSelectedAssets] = useState<ImagePicker.ImagePickerAsset[]>([]);
   const [expandedImage, setExpandedImage] = useState<string | null>(null);
 
   const [ratingPlace, setRatingPlace] = useState<any>(null);
   const [tempRating, setTempRating] = useState<number>(0);
 
-  // New Memory Date Picker State
   const [visitDate, setVisitDate] = useState<Date>(new Date());
   const [showDatePicker, setShowDatePicker] = useState(false);
 
-  // Edit Existing Memory Date State
   const [editingLogId, setEditingLogId] = useState<string | null>(null);
   const [editDate, setEditDate] = useState<Date>(new Date());
 
@@ -64,41 +63,42 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
   const pickImage = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
+      allowsMultipleSelection: true, // <-- Enable selecting multiple photos
       allowsEditing: false,
       quality: 0.7,
       exif: true,
     });
 
     if (!result.canceled) {
-      const asset = result.assets[0];
-      setSelectedImage(asset.uri);
+      // Append newly selected assets so they don't overwrite existing ones if they click "Photo" again
+      setSelectedAssets(prev => [...prev, ...result.assets]);
 
-      if (asset.exif) {
-        const exifDateStr = asset.exif.DateTimeOriginal || asset.exif.DateTimeDigitized || asset.exif.DateTime;
-        if (exifDateStr) {
-          try {
-            const parts = exifDateStr.split(' ');
-            const dateParts = parts[0].split(':');
-            const timeParts = parts[1].split(':');
+      // If they only picked one photo, update the visual UI date picker so they see the EXIF worked
+      if (result.assets.length === 1) {
+        const asset = result.assets[0];
+        if (asset.exif) {
+          const exifDateStr = asset.exif.DateTimeOriginal || asset.exif.DateTimeDigitized || asset.exif.DateTime;
+          if (exifDateStr) {
+            try {
+              const parts = exifDateStr.split(' ');
+              const dateParts = parts[0].split(':');
+              const timeParts = parts[1].split(':');
 
-            const parsedDate = new Date(
-                parseInt(dateParts[0]),
-                parseInt(dateParts[1]) - 1,
-                parseInt(dateParts[2]),
-                parseInt(timeParts[0]),
-                parseInt(timeParts[1]),
-                parseInt(timeParts[2])
-            );
+              const parsedDate = new Date(
+                  parseInt(dateParts[0]), parseInt(dateParts[1]) - 1, parseInt(dateParts[2]),
+                  parseInt(timeParts[0]), parseInt(timeParts[1]), parseInt(timeParts[2])
+              );
 
-            if (!isNaN(parsedDate.getTime())) {
-              setVisitDate(parsedDate);
-            }
-          } catch (e) {
-            console.log("Could not parse EXIF date", e);
+              if (!isNaN(parsedDate.getTime())) setVisitDate(parsedDate);
+            } catch (e) { console.log(e); }
           }
         }
       }
     }
+  };
+
+  const removeAsset = (indexToRemove: number) => {
+    setSelectedAssets(prev => prev.filter((_, index) => index !== indexToRemove));
   };
 
   const uploadImageToCloudinary = async (imageUri: string) => {
@@ -112,34 +112,72 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
 
   const handleSaveMemory = async () => {
     if (!auth.currentUser || !activePlace) return;
-    if (!note.trim() && !selectedImage) return;
+    if (!note.trim() && selectedAssets.length === 0) return;
 
     setIsSavingMemory(true);
-    let uploadedPhotoUrl = '';
 
     try {
-      if (selectedImage) uploadedPhotoUrl = await uploadImageToCloudinary(selectedImage);
+      if (selectedAssets.length > 0) {
+        // Loop through every selected photo and process them as independent memories
+        for (const asset of selectedAssets) {
+          const uploadedPhotoUrl = await uploadImageToCloudinary(asset.uri);
 
-      const newLog = {
-        coupleId: coupleId,
-        cityId: cityId,
-        placeId: activePlace.placeId,
-        notes: note.trim(),
-        dateVisited: visitDate.getTime(),
-        photoUrls: uploadedPhotoUrl ? [uploadedPhotoUrl] : [],
-        createdBy: auth.currentUser.uid,
-      };
+          // Extract date for THIS specific photo (defaults to UI date if no EXIF found)
+          let assetDateMs = visitDate.getTime();
+          if (asset.exif) {
+            const exifDateStr = asset.exif.DateTimeOriginal || asset.exif.DateTimeDigitized || asset.exif.DateTime;
+            if (exifDateStr) {
+              try {
+                const parts = exifDateStr.split(' ');
+                const dateParts = parts[0].split(':');
+                const timeParts = parts[1].split(':');
+                const parsedDate = new Date(
+                    parseInt(dateParts[0]), parseInt(dateParts[1]) - 1, parseInt(dateParts[2]),
+                    parseInt(timeParts[0]), parseInt(timeParts[1]), parseInt(timeParts[2])
+                );
+                if (!isNaN(parsedDate.getTime())) assetDateMs = parsedDate.getTime();
+              } catch (e) {}
+            }
+          }
 
-      await saveMemoryLog(newLog);
+          // If there is only 1 photo, keep the note. If multiple, ditch the note.
+          const finalNote = selectedAssets.length === 1 ? note.trim() : '';
 
+          const newLog = {
+            coupleId: coupleId,
+            cityId: cityId,
+            placeId: activePlace.placeId,
+            notes: finalNote,
+            dateVisited: assetDateMs,
+            photoUrls: [uploadedPhotoUrl],
+            createdBy: auth.currentUser.uid,
+          };
+
+          await saveMemoryLog(newLog);
+        }
+      } else {
+        // Text-only memory (no photos)
+        const newLog = {
+          coupleId: coupleId,
+          cityId: cityId,
+          placeId: activePlace.placeId,
+          notes: note.trim(),
+          dateVisited: visitDate.getTime(),
+          photoUrls: [],
+          createdBy: auth.currentUser.uid,
+        };
+        await saveMemoryLog(newLog);
+      }
+
+      // Reset
       setNote('');
-      setSelectedImage(null);
+      setSelectedAssets([]);
       setVisitDate(new Date());
 
       const fetchedMemories = await getPlaceMemories(coupleId, activePlace.placeId);
       setMemories(fetchedMemories);
     } catch (error: any) {
-      Alert.alert("Upload Error", "Failed to save the memory or image.");
+      Alert.alert("Upload Error", "Failed to save the memories.");
     } finally {
       setIsSavingMemory(false);
     }
@@ -150,7 +188,6 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
     if (selectedDate) setVisitDate(selectedDate);
   };
 
-  // --- NEW: Handle Saving an Edited Date ---
   const handleEditDateChangeAndroid = async (event: any, selectedDate?: Date) => {
     if (event.type === 'set' && selectedDate && editingLogId) {
       await submitEditedDate(editingLogId, selectedDate);
@@ -314,21 +351,35 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
         </View>
 
         <View style={styles.inputArea}>
-          <TextInput
-              style={styles.input}
-              placeholder="Add a memory..."
-              placeholderTextColor="#8e8e93"
-              value={note}
-              onChangeText={setNote}
-              multiline
-          />
 
-          {selectedImage && (
-              <View style={styles.imagePreviewContainer}>
-                <Image source={{ uri: selectedImage }} style={styles.imagePreview} />
-                <TouchableOpacity style={styles.removeImageBtn} onPress={() => setSelectedImage(null)}>
-                  <FontAwesome name="times" size={12} color="#fff" />
-                </TouchableOpacity>
+          {/* Hide Note Input if multiple photos are selected */}
+          {selectedAssets.length <= 1 ? (
+              <TextInput
+                  style={styles.input}
+                  placeholder="Add a memory..."
+                  placeholderTextColor="#8e8e93"
+                  value={note}
+                  onChangeText={setNote}
+                  multiline
+              />
+          ) : (
+              <View style={styles.multiPhotoNotice}>
+                <FontAwesome name="info-circle" size={16} color="#0a84ff" style={{marginRight: 8}} />
+                <Text style={styles.multiPhotoText}>Descriptions are disabled for batch uploads. Each photo will be saved as its own separate memory.</Text>
+              </View>
+          )}
+
+          {/* Render All Selected Images */}
+          {selectedAssets.length > 0 && (
+              <View style={styles.imagePreviewRow}>
+                {selectedAssets.map((asset, index) => (
+                    <View key={index} style={styles.imagePreviewContainer}>
+                      <Image source={{ uri: asset.uri }} style={styles.imagePreview} />
+                      <TouchableOpacity style={styles.removeImageBtn} onPress={() => removeAsset(index)}>
+                        <FontAwesome name="times" size={12} color="#fff" />
+                      </TouchableOpacity>
+                    </View>
+                ))}
               </View>
           )}
 
@@ -348,11 +399,11 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
             </View>
 
             <TouchableOpacity
-                style={[styles.saveButton, (!note.trim() && !selectedImage) && styles.saveButtonDisabled]}
+                style={[styles.saveButton, (!note.trim() && selectedAssets.length === 0) && styles.saveButtonDisabled]}
                 onPress={handleSaveMemory}
-                disabled={(!note.trim() && !selectedImage) || isSavingMemory}
+                disabled={(!note.trim() && selectedAssets.length === 0) || isSavingMemory}
             >
-              <Text style={styles.saveButtonText}>{isSavingMemory ? 'Saving...' : 'Save'}</Text>
+              <Text style={styles.saveButtonText}>{isSavingMemory ? `Saving...` : 'Save'}</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -391,8 +442,6 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
             renderItem={({ item }) => (
                 <View style={styles.logCard}>
                   <View style={styles.logCardHeader}>
-
-                    {/* Clickable Date for Editing */}
                     <TouchableOpacity
                         style={styles.editableDateContainer}
                         onPress={() => {
@@ -411,7 +460,6 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
                     </TouchableOpacity>
                   </View>
 
-                  {/* Edit Date Picker Overlay (Appears inside the card being edited) */}
                   {editingLogId === item.id && Platform.OS === 'ios' && (
                       <View style={[styles.iosInlinePickerContainer, { marginTop: 8, marginBottom: 16 }]}>
                         <View style={styles.iosPickerHeader}>
@@ -487,6 +535,10 @@ const styles = StyleSheet.create({
   inputArea: { marginBottom: 24, backgroundColor: 'rgba(255,255,255,0.05)', padding: 12, borderRadius: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
   input: { backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 12, padding: 14, minHeight: 60, maxHeight: 120, marginBottom: 12, fontSize: 16, color: '#fff' },
 
+  // NEW: Multi-photo notice styles
+  multiPhotoNotice: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.05)', padding: 12, borderRadius: 12, marginBottom: 12 },
+  multiPhotoText: { color: '#ebebf5', fontSize: 13, flex: 1, lineHeight: 18 },
+
   actionRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   leftActions: { flexDirection: 'row', flex: 1 },
   actionPillButton: { flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.15)', paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10, alignItems: 'center', marginRight: 8 },
@@ -496,8 +548,10 @@ const styles = StyleSheet.create({
   saveButtonDisabled: { backgroundColor: 'rgba(10, 132, 255, 0.3)' },
   saveButtonText: { color: '#fff', fontWeight: 'bold' },
 
-  imagePreviewContainer: { position: 'relative', marginBottom: 12, alignSelf: 'flex-start' },
-  imagePreview: { width: 80, height: 80, borderRadius: 10 },
+  // NEW: Horizontal grid styles for multiple thumbnails
+  imagePreviewRow: { flexDirection: 'row', flexWrap: 'wrap', marginBottom: 4 },
+  imagePreviewContainer: { position: 'relative', marginRight: 12, marginBottom: 12 },
+  imagePreview: { width: 70, height: 70, borderRadius: 10 },
   removeImageBtn: { position: 'absolute', top: -8, right: -8, backgroundColor: '#ff453a', width: 22, height: 22, borderRadius: 11, justifyContent: 'center', alignItems: 'center', borderWidth: 2, borderColor: '#333' },
 
   logCard: { backgroundColor: 'rgba(255,255,255,0.1)', padding: 16, borderRadius: 16, marginBottom: 16 },
