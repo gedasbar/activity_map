@@ -1,7 +1,7 @@
 import { FontAwesome } from '@expo/vector-icons';
 import { onAuthStateChanged, signOut, User } from 'firebase/auth';
 import React, { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, KeyboardAvoidingView, Modal, Platform, StyleSheet, Text, TextInput, TouchableOpacity, View, Keyboard, Image, Pressable } from 'react-native';
+import { ActivityIndicator, Alert, FlatList, KeyboardAvoidingView, Modal, Platform, StyleSheet, Text, TextInput, TouchableOpacity, View, Keyboard, Image, Pressable, Dimensions } from 'react-native';
 import MapView, { Marker, PROVIDER_DEFAULT, Region } from 'react-native-maps';
 import { BlurView } from 'expo-blur';
 import CityDetailSheet from '../components/CityDetailSheet';
@@ -10,7 +10,6 @@ import LoginScreen from '../components/LoginScreen';
 import { auth } from '../config/firebaseConfig';
 import { getAllSavedPlaces, getUnlockedCities, getUserProfile, linkCoupleAccounts, savePlace, unlockCity, deleteUnlockedCity, getAllCoupleMemories } from '../services/firestoreService';
 
-// Define the City interface right here since we deleted the separate file
 export interface City {
   id: string;
   name: string;
@@ -18,13 +17,45 @@ export interface City {
   longitude: number;
 }
 
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const LITHUANIA_REGION = { latitude: 55.1694, longitude: 23.8813, latitudeDelta: 3.2, longitudeDelta: 4.8 };
 const ZOOM_THRESHOLD = 0.15;
 
 const normalizeText = (text: string) => text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
+const getThumbnailUrl = (url: string) => {
+  if (url && url.includes('/upload/')) {
+    return url.replace('/upload/', '/upload/c_fill,w_300,h_300,q_auto/');
+  }
+  return url;
+};
+
+// --- NEW: Custom Component to handle individual loading spinners perfectly ---
+const FullScreenImageItem = ({ item, placeName }: { item: any, placeName: string }) => {
+  const [isImageLoading, setIsImageLoading] = useState(true);
+
+  return (
+      <View style={{ width: SCREEN_WIDTH, height: SCREEN_HEIGHT, justifyContent: 'center', alignItems: 'center' }}>
+        {isImageLoading && (
+            <ActivityIndicator size="large" color="#0a84ff" style={{ position: 'absolute' }} />
+        )}
+        <Image
+            source={{ uri: item.url }}
+            style={{ width: '100%', height: '100%', zIndex: 1 }}
+            resizeMode="contain"
+            onLoadEnd={() => setIsImageLoading(false)}
+        />
+        <View style={styles.fullScreenDetails}>
+          <Text style={styles.fullScreenPlaceName}>{placeName}</Text>
+          <Text style={styles.fullScreenDate}>{new Date(item.dateVisited).toLocaleDateString()}</Text>
+        </View>
+      </View>
+  );
+};
+
 export default function App() {
   const mapRef = useRef<MapView>(null);
+  const fullScreenListRef = useRef<FlatList>(null);
 
   const [mapMode, setMapMode] = useState<'default' | 'city_menu' | 'view_places' | 'search_place'>('default');
   const [selectedCity, setSelectedCity] = useState<City | null>(null);
@@ -38,9 +69,11 @@ export default function App() {
   const citySearchAbortControllerRef = useRef<AbortController | null>(null);
 
   const [showSettingsModal, setShowSettingsModal] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<'gallery' | 'stats' | 'sync'>('gallery');
+  const [settingsTab, setSettingsTab] = useState<'gallery' | 'memories' | 'stats' | 'sync'>('gallery');
   const [galleryMemories, setGalleryMemories] = useState<any[]>([]);
   const [isLoadingGallery, setIsLoadingGallery] = useState(false);
+
+  const [expandedGalleryIndex, setExpandedGalleryIndex] = useState<number | null>(null);
 
   const [showPlaces, setShowPlaces] = useState(false);
 
@@ -112,12 +145,9 @@ export default function App() {
       try {
         const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(trimmed)}&format=json&limit=7&featuretype=settlement&addressdetails=1&accept-language=lt,en`;
         const response = await fetch(url, { signal: abortController.signal, headers: { 'User-Agent': 'ActivityMapApp/1.0', 'Accept-Language': 'lt, en;q=0.5' } });
-
         if (!response.ok) { setIsSearchingCity(false); return; }
-
         const contentType = response.headers.get('content-type') || '';
         let data: any[] = [];
-
         if (!contentType.includes('application/json')) {
           const textResponse = await response.text();
           if (textResponse.trim().startsWith('<')) { setIsSearchingCity(false); return; }
@@ -125,23 +155,15 @@ export default function App() {
         } else {
           data = await response.json();
         }
-
         if (Array.isArray(data)) {
           const mapped: City[] = data
               .map((item: any) => {
                 const cityName = item.name || item.address?.city || item.address?.town || item.address?.village || item.display_name.split(',')[0];
                 const country = item.address?.country || '';
                 const fullName = country ? `${cityName}, ${country}` : cityName;
-
-                return {
-                  id: `osm_${item.place_id}`,
-                  name: fullName,
-                  latitude: parseFloat(item.lat),
-                  longitude: parseFloat(item.lon)
-                };
+                return { id: `osm_${item.place_id}`, name: fullName, latitude: parseFloat(item.lat), longitude: parseFloat(item.lon) };
               })
               .filter((c) => !unlockedCities.some((u) => normalizeText(u.name) === normalizeText(c.name)));
-
           setCitySearchResults(mapped);
         }
       } catch (e: any) {
@@ -184,16 +206,10 @@ export default function App() {
       const abortController = new AbortController();
       searchAbortControllerRef.current = abortController;
       try {
-        // Use the selected city name (which now includes the country) and remove the hardcoded "Lietuva"
         const query = selectedCity ? `${trimmed}, ${selectedCity.name}` : trimmed;
-
-        // Removed countrycodes=lt so it searches the entire globe
         const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=7&addressdetails=1&accept-language=lt,en`;
-
         const response = await fetch(url, { signal: abortController.signal, headers: { 'User-Agent': 'ActivityMapApp/1.0', 'Accept-Language': 'lt, en;q=0.5' } });
-
         if (!response.ok) { setIsSearchingLocation(false); return; }
-
         const contentType = response.headers.get('content-type') || '';
         if (!contentType.includes('application/json')) {
           const textResponse = await response.text();
@@ -203,11 +219,7 @@ export default function App() {
           const data = await response.json();
           setSearchResults(Array.isArray(data) ? data : []);
         }
-      } catch (e: any) {
-        if (e.name !== 'AbortError') console.error(e);
-      } finally {
-        setIsSearchingLocation(false);
-      }
+      } catch (e: any) { if (e.name !== 'AbortError') console.error(e); } finally { setIsSearchingLocation(false); }
     }, 400);
   };
 
@@ -258,14 +270,11 @@ export default function App() {
   const confirmAddPlace = async () => {
     if (!selectedCity || !previewPlace) return;
     Keyboard.dismiss();
-
     const finalPlaceData = { ...previewPlace };
     const placeIdStr = String(finalPlaceData.place_id);
-
     if (placeIdStr.startsWith('custom_') || placeIdStr.startsWith('poi_')) {
       finalPlaceData.name = customPlaceName.trim();
     }
-
     await savePlace(myCoupleId, selectedCity.id, finalPlaceData);
     setPreviewPlace(null); setSearchQuery(''); setCustomPlaceName(''); setMapMode('city_menu');
     await loadCitiesAndPlaces(myCoupleId);
@@ -291,13 +300,28 @@ export default function App() {
     } catch (error: any) { Alert.alert("Error", error.message); }
   };
 
-  const combinedCitiesToAdd = citySearchResults;
+  const galleryPhotos = galleryMemories.flatMap(mem =>
+      (mem.photoUrls || []).map((url: string, index: number) => ({
+        id: `${mem.id}-${index}`,
+        url: url,
+        dateVisited: mem.dateVisited,
+        placeId: mem.placeId,
+        notes: mem.notes
+      }))
+  );
 
-  // --- UPDATED STATS MATH ---
+  const today = new Date();
+  const onThisDayPhotos = galleryPhotos.filter(photo => {
+    const d = new Date(photo.dateVisited);
+    return d.getDate() === today.getDate() &&
+        d.getMonth() === today.getMonth() &&
+        d.getFullYear() < today.getFullYear();
+  });
+
   const visitedCities = unlockedCities.length;
   const totalPlaces = savedMapPlaces.length;
   const totalMemories = galleryMemories.length;
-  const totalPhotos = galleryMemories.filter(m => m.photoUrls && m.photoUrls.length > 0).length;
+  const totalPhotos = galleryPhotos.length;
 
   if (loading) return <View style={styles.centered}><ActivityIndicator size="large" color="#fff" /></View>;
   if (!user) return <LoginScreen />;
@@ -369,7 +393,6 @@ export default function App() {
         {mapMode === 'search_place' && previewPlace && (
             <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.previewBottomBar}>
               <BlurView intensity={85} tint="dark" style={styles.previewGlass}>
-
                 {(String(previewPlace.place_id).startsWith('custom_') || String(previewPlace.place_id).startsWith('poi_')) ? (
                     <TextInput
                         style={styles.customNameInput}
@@ -382,12 +405,10 @@ export default function App() {
                 ) : (
                     <Text style={styles.previewName} numberOfLines={1}>{previewPlace.name || previewPlace.display_name.split(',')[0]}</Text>
                 )}
-
                 <View style={styles.previewActionRow}>
                   <TouchableOpacity style={styles.cancelPreviewButton} onPress={cancelSearch}>
                     <Text style={styles.cancelPreviewText}>Cancel</Text>
                   </TouchableOpacity>
-
                   <TouchableOpacity
                       style={[styles.savePreviewButton, (String(previewPlace.place_id).startsWith('custom_') || String(previewPlace.place_id).startsWith('poi_')) && !customPlaceName.trim() ? { backgroundColor: 'rgba(255,255,255,0.2)' } : {}]}
                       disabled={(String(previewPlace.place_id).startsWith('custom_') || String(previewPlace.place_id).startsWith('poi_')) && !customPlaceName.trim()}
@@ -396,7 +417,6 @@ export default function App() {
                     <Text style={styles.savePreviewText}>Save</Text>
                   </TouchableOpacity>
                 </View>
-
               </BlurView>
             </KeyboardAvoidingView>
         )}
@@ -413,6 +433,9 @@ export default function App() {
                 <TouchableOpacity style={[styles.tabButton, settingsTab === 'gallery' && styles.tabButtonActive]} onPress={() => setSettingsTab('gallery')}>
                   <Text style={[styles.tabText, settingsTab === 'gallery' && styles.tabTextActive]}>Gallery</Text>
                 </TouchableOpacity>
+                <TouchableOpacity style={[styles.tabButton, settingsTab === 'memories' && styles.tabButtonActive]} onPress={() => setSettingsTab('memories')}>
+                  <Text style={[styles.tabText, settingsTab === 'memories' && styles.tabTextActive]}>Memories</Text>
+                </TouchableOpacity>
                 <TouchableOpacity style={[styles.tabButton, settingsTab === 'stats' && styles.tabButtonActive]} onPress={() => setSettingsTab('stats')}>
                   <Text style={[styles.tabText, settingsTab === 'stats' && styles.tabTextActive]}>Stats</Text>
                 </TouchableOpacity>
@@ -422,39 +445,27 @@ export default function App() {
               </View>
 
               {settingsTab === 'gallery' && (
-                  <View style={styles.tabContentAreaGallery}>
+                  <View style={styles.edgeToEdgeContainer}>
                     {isLoadingGallery ? (
                         <ActivityIndicator color="#fff" style={{marginTop: 40}} />
                     ) : (
                         <FlatList
-                            data={galleryMemories}
+                            data={galleryPhotos}
                             keyExtractor={item => item.id}
+                            numColumns={3}
                             showsVerticalScrollIndicator={false}
                             contentContainerStyle={{ paddingBottom: 40 }}
-                            renderItem={({item}) => {
-                              const mappedPlace = savedMapPlaces.find(p => p.placeId === item.placeId);
-                              return (
-                                  <View style={styles.galleryCard}>
-                                    {item.photoUrls && item.photoUrls.length > 0 && (
-                                        <Image source={{uri: item.photoUrls[0]}} style={styles.galleryImage} resizeMode="cover" />
-                                    )}
-                                    <View style={styles.galleryTextContainer}>
-                                      <Text style={styles.galleryPlaceName}>{mappedPlace?.name || 'Unknown Location'}</Text>
-                                      <Text style={styles.galleryDate}>{new Date(item.dateVisited).toLocaleDateString()}</Text>
-                                      {item.notes ? <Text style={styles.galleryNotes}>{item.notes}</Text> : null}
-                                    </View>
-                                  </View>
-                              )
-                            }}
+                            renderItem={({item, index}) => (
+                                <TouchableOpacity
+                                    style={styles.gridImageContainer}
+                                    onPress={() => setExpandedGalleryIndex(index)}
+                                >
+                                  <Image source={{uri: getThumbnailUrl(item.url)}} style={styles.gridImage} resizeMode="cover" />
+                                </TouchableOpacity>
+                            )}
                             ListEmptyComponent={
-                              <View style={styles.emptyListContainer}>
-                                {isSearchingCity ? (
-                                    <ActivityIndicator size="small" color="#fff" />
-                                ) : (
-                                    <Text style={styles.emptyListText}>
-                                      {citySearchQuery.length < 2 ? "Type a city name to search globally" : "No cities found"}
-                                    </Text>
-                                )}
+                              <View style={{ padding: 24 }}>
+                                <Text style={styles.emptyText}>No photos uploaded yet.</Text>
                               </View>
                             }
                         />
@@ -462,7 +473,47 @@ export default function App() {
                   </View>
               )}
 
-              {/* UPDATED STATS TAB */}
+              {settingsTab === 'memories' && (
+                  <View style={styles.tabContentAreaGallery}>
+                    {onThisDayPhotos.length > 0 ? (
+                        <View style={styles.onThisDayContainer}>
+                          <Text style={styles.onThisDayTitle}>On This Day</Text>
+                          <FlatList
+                              data={onThisDayPhotos}
+                              keyExtractor={item => `otd-${item.id}`}
+                              showsVerticalScrollIndicator={false}
+                              renderItem={({item}) => {
+                                const yearsAgo = today.getFullYear() - new Date(item.dateVisited).getFullYear();
+                                const mappedPlace = savedMapPlaces.find(p => p.placeId === item.placeId);
+
+                                return (
+                                    <TouchableOpacity
+                                        style={styles.otdCard}
+                                        onPress={() => setExpandedGalleryIndex(galleryPhotos.findIndex(p => p.id === item.id))}
+                                    >
+                                      <Image source={{uri: getThumbnailUrl(item.url)}} style={styles.otdCardImage} resizeMode="cover" />
+                                      <View style={styles.yearsAgoBadgeLarge}>
+                                        <Text style={styles.yearsAgoTextLarge}>{yearsAgo} {yearsAgo === 1 ? 'Year' : 'Years'} Ago</Text>
+                                      </View>
+                                      <View style={styles.otdCardText}>
+                                        <Text style={styles.otdPlaceName}>{mappedPlace?.name || 'Unknown Location'}</Text>
+                                        <Text style={styles.otdDate}>{new Date(item.dateVisited).toLocaleDateString()}</Text>
+                                      </View>
+                                    </TouchableOpacity>
+                                )
+                              }}
+                          />
+                        </View>
+                    ) : (
+                        <View style={{ marginTop: 40, alignItems: 'center' }}>
+                          <FontAwesome name="calendar-times-o" size={40} color="#8e8e93" style={{marginBottom: 16}} />
+                          <Text style={[styles.emptyText, {marginTop: 0}]}>No memories on this exact day in previous years.</Text>
+                          <Text style={{color: '#666', textAlign: 'center', marginTop: 8, fontSize: 14}}>Check back tomorrow, or add past trips to fill your calendar!</Text>
+                        </View>
+                    )}
+                  </View>
+              )}
+
               {settingsTab === 'stats' && (
                   <View style={styles.tabContentArea}>
                     <View style={styles.statsRow}>
@@ -506,6 +557,41 @@ export default function App() {
                   </View>
               )}
             </BlurView>
+
+            {/* HIGH PERFORMANCE: Windowed Full Screen Swiper (7 items in memory at a time) */}
+            {expandedGalleryIndex !== null && (
+                <View style={styles.fullScreenRootOverlay}>
+                  <TouchableOpacity style={styles.closeFullScreenBtnRoot} onPress={() => setExpandedGalleryIndex(null)}>
+                    <FontAwesome name="times" size={28} color="#fff" />
+                  </TouchableOpacity>
+                  <FlatList
+                      ref={fullScreenListRef}
+                      data={galleryPhotos}
+                      keyExtractor={item => item.id}
+                      horizontal
+                      pagingEnabled
+                      showsHorizontalScrollIndicator={false}
+                      initialScrollIndex={expandedGalleryIndex}
+
+                      // Optimization: Render 1 immediately, then keep 3 ahead and 3 behind in RAM
+                      initialNumToRender={1}
+                      windowSize={7}
+                      maxToRenderPerBatch={2}
+                      removeClippedSubviews={Platform.OS === 'android'}
+
+                      getItemLayout={(data, index) => ({ length: SCREEN_WIDTH, offset: SCREEN_WIDTH * index, index })}
+                      onScrollToIndexFailed={info => {
+                        const wait = new Promise(resolve => setTimeout(resolve, 300));
+                        wait.then(() => fullScreenListRef.current?.scrollToIndex({ index: info.index, animated: false }));
+                      }}
+                      renderItem={({ item }) => {
+                        const mappedPlace = savedMapPlaces.find(p => p.placeId === item.placeId);
+                        return <FullScreenImageItem item={item} placeName={mappedPlace?.name || 'Unknown Location'} />
+                      }}
+                  />
+                </View>
+            )}
+
           </View>
         </Modal>
 
@@ -515,19 +601,15 @@ export default function App() {
               <BlurView intensity={90} tint="dark" style={styles.menuSheet}>
                 <Text style={styles.menuTitle}>{selectedCity?.name}</Text>
                 <Text style={styles.menuSubtitle}>What would you like to do?</Text>
-
                 <TouchableOpacity style={styles.menuPrimaryButton} onPress={() => setMapMode('search_place')}>
                   <Text style={styles.menuPrimaryText}>Search and add place</Text>
                 </TouchableOpacity>
-
                 <TouchableOpacity style={styles.menuSecondaryButton} onPress={() => setMapMode('view_places')}>
                   <Text style={styles.menuSecondaryText}>View saved places</Text>
                 </TouchableOpacity>
-
                 <TouchableOpacity style={[styles.menuSecondaryButton, { marginTop: 8 }]} onPress={() => selectedCity && handleDeleteCity(selectedCity)}>
                   <Text style={[styles.menuSecondaryText, { color: '#ff453a' }]}>Remove city from map</Text>
                 </TouchableOpacity>
-
                 <TouchableOpacity style={[styles.menuSecondaryButton, { marginTop: 16, backgroundColor: 'transparent' }]} onPress={() => setMapMode('default')}>
                   <Text style={[styles.menuSecondaryText, { color: '#8e8e93' }]}>Cancel</Text>
                 </TouchableOpacity>
@@ -552,7 +634,7 @@ export default function App() {
                 {citySearchQuery.length > 0 && <TouchableOpacity onPress={() => { setCitySearchQuery(''); setCitySearchResults([]); }} style={styles.clearSearchButton}><FontAwesome name="times-circle" size={16} color="#8e8e93" /></TouchableOpacity>}
               </View>
               <FlatList
-                  data={combinedCitiesToAdd}
+                  data={citySearchResults}
                   keyExtractor={(item) => item.id}
                   keyboardShouldPersistTaps="handled"
                   renderItem={({ item }) => (
@@ -619,21 +701,35 @@ const styles = StyleSheet.create({
 
   modalBackdrop: { flex: 1, justifyContent: 'flex-end' },
 
-  settingsSheet: { height: '85%', padding: 24, borderTopLeftRadius: 28, borderTopRightRadius: 28 },
+  settingsSheet: { height: '85%', paddingTop: 24, paddingHorizontal: 24, paddingBottom: 0, borderTopLeftRadius: 28, borderTopRightRadius: 28 },
+
   tabsContainer: { flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 14, padding: 4, marginBottom: 20 },
   tabButton: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 10 },
   tabButtonActive: { backgroundColor: 'rgba(255,255,255,0.2)' },
-  tabText: { color: '#ebebf5', fontSize: 15, fontWeight: '600', opacity: 0.7 },
+  tabText: { color: '#ebebf5', fontSize: 14, fontWeight: '600', opacity: 0.7 },
   tabTextActive: { color: '#fff', opacity: 1 },
   tabContentArea: { flex: 0 },
   tabContentAreaGallery: { flex: 1 },
 
-  galleryCard: { backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: 16, overflow: 'hidden', marginBottom: 16 },
-  galleryImage: { width: '100%', height: 220, backgroundColor: 'rgba(255,255,255,0.1)' },
-  galleryTextContainer: { padding: 16 },
-  galleryPlaceName: { fontSize: 18, fontWeight: 'bold', color: '#fff', marginBottom: 4 },
-  galleryDate: { fontSize: 12, color: '#ebebf5', opacity: 0.7, marginBottom: 8 },
-  galleryNotes: { fontSize: 15, color: '#fff', lineHeight: 22 },
+  edgeToEdgeContainer: { flex: 1, marginHorizontal: -24 },
+  gridImageContainer: { width: SCREEN_WIDTH / 3, aspectRatio: 1, padding: 1 },
+  gridImage: { width: '100%', height: '100%' },
+
+  onThisDayContainer: { marginBottom: 20 },
+  onThisDayTitle: { fontSize: 20, fontWeight: 'bold', color: '#fff', marginBottom: 16 },
+  otdCard: { backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: 16, overflow: 'hidden', marginBottom: 16 },
+  otdCardImage: { width: '100%', height: 250 },
+  otdCardText: { padding: 16 },
+  otdPlaceName: { fontSize: 18, fontWeight: 'bold', color: '#fff', marginBottom: 4 },
+  otdDate: { fontSize: 14, color: '#ebebf5', opacity: 0.8 },
+  yearsAgoBadgeLarge: { position: 'absolute', top: 16, right: 16, backgroundColor: 'rgba(0,0,0,0.7)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 12, overflow: 'hidden' },
+  yearsAgoTextLarge: { color: '#fff', fontSize: 14, fontWeight: 'bold' },
+
+  fullScreenRootOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: '#000', zIndex: 9999 },
+  closeFullScreenBtnRoot: { position: 'absolute', top: 50, right: 20, zIndex: 10000, padding: 16, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 30 },
+  fullScreenDetails: { position: 'absolute', bottom: 50, left: 20, right: 20, backgroundColor: 'rgba(0,0,0,0.6)', padding: 16, borderRadius: 16, zIndex: 2 },
+  fullScreenPlaceName: { fontSize: 18, fontWeight: 'bold', color: '#fff', marginBottom: 4 },
+  fullScreenDate: { fontSize: 14, color: '#ebebf5' },
 
   statsRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 12 },
   statCard: { flex: 1, backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: 16, padding: 16, marginHorizontal: 4, alignItems: 'center', justifyContent: 'center' },
