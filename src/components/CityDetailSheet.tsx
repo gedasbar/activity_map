@@ -1,11 +1,12 @@
 import { FontAwesome } from '@expo/vector-icons';
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, StyleSheet, Text, TextInput, TouchableOpacity, View, Image, Modal } from 'react-native';
+import { ActivityIndicator, Alert, FlatList, StyleSheet, Text, TextInput, TouchableOpacity, View, Image, Modal, Platform } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
+import { BlurView } from 'expo-blur';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { auth } from '../config/firebaseConfig';
-import { deleteMemoryLog, deleteSavedPlace, getCityPlaces, getPlaceMemories, saveMemoryLog, updatePlaceRating } from '../services/firestoreService';
+import { deleteMemoryLog, deleteSavedPlace, getCityPlaces, getPlaceMemories, saveMemoryLog, updatePlaceRating, updateMemoryDate } from '../services/firestoreService';
 
-// --- CLOUDINARY CONFIG ---
 const CLOUDINARY_URL = 'https://api.cloudinary.com/v1_1/jpxtr4kd/image/upload';
 const UPLOAD_PRESET = 'pind_map';
 
@@ -31,9 +32,16 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [expandedImage, setExpandedImage] = useState<string | null>(null);
 
-  // Rating State
   const [ratingPlace, setRatingPlace] = useState<any>(null);
   const [tempRating, setTempRating] = useState<number>(0);
+
+  // New Memory Date Picker State
+  const [visitDate, setVisitDate] = useState<Date>(new Date());
+  const [showDatePicker, setShowDatePicker] = useState(false);
+
+  // Edit Existing Memory Date State
+  const [editingLogId, setEditingLogId] = useState<string | null>(null);
+  const [editDate, setEditDate] = useState<Date>(new Date());
 
   useEffect(() => {
     loadSavedPlaces();
@@ -55,29 +63,49 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
 
   const pickImage = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
+      mediaTypes: ['images'],
+      allowsEditing: false,
       quality: 0.7,
+      exif: true,
     });
 
     if (!result.canceled) {
-      setSelectedImage(result.assets[0].uri);
+      const asset = result.assets[0];
+      setSelectedImage(asset.uri);
+
+      if (asset.exif) {
+        const exifDateStr = asset.exif.DateTimeOriginal || asset.exif.DateTimeDigitized || asset.exif.DateTime;
+        if (exifDateStr) {
+          try {
+            const parts = exifDateStr.split(' ');
+            const dateParts = parts[0].split(':');
+            const timeParts = parts[1].split(':');
+
+            const parsedDate = new Date(
+                parseInt(dateParts[0]),
+                parseInt(dateParts[1]) - 1,
+                parseInt(dateParts[2]),
+                parseInt(timeParts[0]),
+                parseInt(timeParts[1]),
+                parseInt(timeParts[2])
+            );
+
+            if (!isNaN(parsedDate.getTime())) {
+              setVisitDate(parsedDate);
+            }
+          } catch (e) {
+            console.log("Could not parse EXIF date", e);
+          }
+        }
+      }
     }
   };
 
   const uploadImageToCloudinary = async (imageUri: string) => {
     const data = new FormData();
-    data.append('file', {
-      uri: imageUri,
-      type: 'image/jpeg',
-      name: 'upload.jpg',
-    } as any);
+    data.append('file', { uri: imageUri, type: 'image/jpeg', name: 'upload.jpg' } as any);
     data.append('upload_preset', UPLOAD_PRESET);
-
-    const response = await fetch(CLOUDINARY_URL, {
-      method: 'POST',
-      body: data,
-    });
+    const response = await fetch(CLOUDINARY_URL, { method: 'POST', body: data });
     const result = await response.json();
     return result.secure_url;
   };
@@ -90,16 +118,14 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
     let uploadedPhotoUrl = '';
 
     try {
-      if (selectedImage) {
-        uploadedPhotoUrl = await uploadImageToCloudinary(selectedImage);
-      }
+      if (selectedImage) uploadedPhotoUrl = await uploadImageToCloudinary(selectedImage);
 
       const newLog = {
         coupleId: coupleId,
         cityId: cityId,
         placeId: activePlace.placeId,
         notes: note.trim(),
-        dateVisited: Date.now(),
+        dateVisited: visitDate.getTime(),
         photoUrls: uploadedPhotoUrl ? [uploadedPhotoUrl] : [],
         createdBy: auth.currentUser.uid,
       };
@@ -108,34 +134,51 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
 
       setNote('');
       setSelectedImage(null);
+      setVisitDate(new Date());
 
       const fetchedMemories = await getPlaceMemories(coupleId, activePlace.placeId);
       setMemories(fetchedMemories);
     } catch (error: any) {
       Alert.alert("Upload Error", "Failed to save the memory or image.");
-      console.error(error);
     } finally {
       setIsSavingMemory(false);
     }
   };
 
+  const handleDateChange = (event: any, selectedDate?: Date) => {
+    if (Platform.OS === 'android') setShowDatePicker(false);
+    if (selectedDate) setVisitDate(selectedDate);
+  };
+
+  // --- NEW: Handle Saving an Edited Date ---
+  const handleEditDateChangeAndroid = async (event: any, selectedDate?: Date) => {
+    if (event.type === 'set' && selectedDate && editingLogId) {
+      await submitEditedDate(editingLogId, selectedDate);
+    } else {
+      setEditingLogId(null);
+    }
+  };
+
+  const submitEditedDate = async (logId: string, newDate: Date) => {
+    try {
+      await updateMemoryDate(logId, newDate.getTime());
+      const fetchedMemories = await getPlaceMemories(coupleId, activePlace.placeId);
+      setMemories(fetchedMemories);
+      setEditingLogId(null);
+    } catch (error) {
+      Alert.alert("Error", "Could not update date.");
+    }
+  };
+
   const handleDeletePlace = (place: any) => {
-    Alert.alert(
-        'Delete Place',
-        `Are you sure you want to delete "${place.name}" and all its recorded memories?`,
-        [
+    Alert.alert('Remove Place', `Are you sure you want to remove "${place.name}"?`, [
           { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Delete',
-            style: 'destructive',
-            onPress: async () => {
+          { text: 'Remove', style: 'destructive', onPress: async () => {
               try {
                 await deleteSavedPlace(place.id, coupleId, place.placeId);
                 await loadSavedPlaces();
                 onPlacesUpdated?.();
-              } catch (err: any) {
-                Alert.alert('Error', err.message || 'Could not delete place');
-              }
+              } catch (err: any) { Alert.alert('Error', err.message); }
             },
           },
         ]
@@ -143,23 +186,15 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
   };
 
   const handleDeleteMemory = (log: any) => {
-    Alert.alert(
-        'Delete Memory',
-        'Are you sure you want to delete this recorded memory?',
-        [
+    Alert.alert('Remove Memory', 'Are you sure you want to remove this memory?', [
           { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Delete',
-            style: 'destructive',
-            onPress: async () => {
+          { text: 'Remove', style: 'destructive', onPress: async () => {
               if (!log.id || !activePlace) return;
               try {
                 await deleteMemoryLog(log.id);
                 const fetchedMemories = await getPlaceMemories(coupleId, activePlace.placeId);
                 setMemories(fetchedMemories);
-              } catch (err: any) {
-                Alert.alert('Error', err.message || 'Could not delete record');
-              }
+              } catch (err: any) { Alert.alert('Error', err.message); }
             },
           },
         ]
@@ -184,16 +219,16 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
 
   if (viewMode === 'city') {
     return (
-        <View style={styles.container}>
+        <BlurView intensity={85} tint="dark" style={styles.container}>
           <View style={styles.header}>
-            <Text style={styles.cityName}>{cityName} Places</Text>
+            <Text style={styles.cityName}>{cityName}</Text>
             <TouchableOpacity onPress={onClose}>
               <Text style={styles.closeText}>Close</Text>
             </TouchableOpacity>
           </View>
 
           {isLoadingPlaces ? (
-              <ActivityIndicator style={styles.loader} color="#007AFF" />
+              <ActivityIndicator style={styles.loader} color="#fff" />
           ) : (
               <FlatList
                   data={savedPlaces}
@@ -202,62 +237,47 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
                       <View style={styles.savedPlaceCard}>
                         <TouchableOpacity style={styles.savedPlaceContent} onPress={() => openPlace(item)}>
                           <Text style={styles.savedPlaceName}>{item.name}</Text>
-                          <Text style={styles.savedPlaceDate}>Added: {new Date(item.addedAt).toLocaleDateString()}</Text>
+                          <Text style={styles.savedPlaceDate}>Added {new Date(item.addedAt).toLocaleDateString()}</Text>
                         </TouchableOpacity>
 
                         <View style={styles.actionButtonsContainer}>
-                          {/* Rating Button */}
-                          <TouchableOpacity
-                              style={styles.actionButton}
-                              onPress={() => openRatingModal(item)}
-                              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                          >
+                          <TouchableOpacity style={styles.actionButton} onPress={() => openRatingModal(item)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
                             {item.rating ? (
                                 <View style={styles.ratedBadge}>
                                   <Text style={styles.ratedNumber}>{item.rating}</Text>
-                                  <FontAwesome name="star-o" size={20} color="#333" style={{ fontWeight: 'bold' }} />
+                                  <FontAwesome name="star-o" size={20} color="#fff" style={{ fontWeight: 'bold' }} />
                                 </View>
                             ) : (
-                                <FontAwesome name="star-o" size={20} color="#999" />
+                                <FontAwesome name="star-o" size={20} color="#8e8e93" />
                             )}
                           </TouchableOpacity>
 
-                          {/* Delete Button */}
-                          <TouchableOpacity
-                              style={styles.actionButton}
-                              onPress={() => handleDeletePlace(item)}
-                              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                          >
-                            <FontAwesome name="trash-o" size={20} color="#ff3b30" />
+                          <TouchableOpacity style={styles.actionButton} onPress={() => handleDeletePlace(item)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                            <FontAwesome name="trash-o" size={20} color="#ff453a" />
                           </TouchableOpacity>
                         </View>
                       </View>
                   )}
-                  ListEmptyComponent={
-                    <Text style={styles.emptyText}>No saved places yet. Use the map search to add some!</Text>
-                  }
+                  ListEmptyComponent={<Text style={styles.emptyText}>No places yet.</Text>}
               />
           )}
 
-          {/* Custom Rating Dialog */}
           <Modal visible={!!ratingPlace} transparent animationType="fade">
-            <View style={styles.modalBackdrop}>
-              <View style={styles.ratingDialog}>
-                <Text style={styles.ratingTitle}>Rate</Text>
-                <Text style={styles.ratingSubtitle} numberOfLines={1}>{ratingPlace?.name}</Text>
+            <View style={styles.alertBackdrop}>
+              <BlurView intensity={90} tint="dark" style={styles.iosAlertBox}>
+                <View style={styles.iosAlertHeader}>
+                  <Text style={styles.iosAlertTitle}>Rate Place</Text>
+                  <Text style={styles.iosAlertSubtitle} numberOfLines={2}>
+                    What rating would you give "{ratingPlace?.name}"?
+                  </Text>
+                </View>
 
                 <View style={styles.starsRow}>
                   {[1, 2, 3, 4, 5].map((star) => (
                       <View key={star} style={styles.starContainer}>
-                        {/* Background Star Icon */}
                         <View style={styles.starIconWrapper} pointerEvents="none">
-                          <FontAwesome
-                              name={tempRating >= star ? 'star' : tempRating >= star - 0.5 ? 'star-half-o' : 'star-o'}
-                              size={36}
-                              color="#333"
-                          />
+                          <FontAwesome name={tempRating >= star ? 'star' : tempRating >= star - 0.5 ? 'star-half-o' : 'star-o'} size={32} color="#fff" />
                         </View>
-                        {/* Invisible Touch Zones for 0.5 precision */}
                         <View style={styles.starTouchZones}>
                           <TouchableOpacity style={styles.halfStarZone} onPress={() => setTempRating(star - 0.5)} />
                           <TouchableOpacity style={styles.halfStarZone} onPress={() => setTempRating(star)} />
@@ -266,25 +286,23 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
                   ))}
                 </View>
 
-                <Text style={styles.ratingDisplay}>{tempRating > 0 ? tempRating : 'Select a rating'}</Text>
-
-                <View style={styles.ratingActionRow}>
-                  <TouchableOpacity style={styles.ratingCancelBtn} onPress={() => setRatingPlace(null)}>
-                    <Text style={styles.ratingCancelText}>Cancel</Text>
+                <View style={styles.iosAlertButtonRow}>
+                  <TouchableOpacity style={[styles.iosAlertPillButton, { backgroundColor: 'rgba(255,255,255,0.15)' }]} onPress={() => setRatingPlace(null)}>
+                    <Text style={styles.iosAlertButtonTextCancel}>Cancel</Text>
                   </TouchableOpacity>
-                  <TouchableOpacity style={styles.ratingDoneBtn} onPress={saveRating}>
-                    <Text style={styles.ratingDoneText}>Done</Text>
+                  <TouchableOpacity style={[styles.iosAlertPillButton, { backgroundColor: 'rgba(255,255,255,0.15)' }]} onPress={saveRating}>
+                    <Text style={styles.iosAlertButtonTextConfirm}>Save</Text>
                   </TouchableOpacity>
                 </View>
-              </View>
+              </BlurView>
             </View>
           </Modal>
-        </View>
+        </BlurView>
     );
   }
 
   return (
-      <View style={styles.container}>
+      <BlurView intensity={85} tint="dark" style={styles.container}>
         <View style={styles.header}>
           <TouchableOpacity onPress={() => setViewMode('city')}>
             <Text style={styles.backText}>← Back</Text>
@@ -298,7 +316,8 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
         <View style={styles.inputArea}>
           <TextInput
               style={styles.input}
-              placeholder="What did you do here?"
+              placeholder="Add a memory..."
+              placeholderTextColor="#8e8e93"
               value={note}
               onChangeText={setNote}
               multiline
@@ -308,15 +327,25 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
               <View style={styles.imagePreviewContainer}>
                 <Image source={{ uri: selectedImage }} style={styles.imagePreview} />
                 <TouchableOpacity style={styles.removeImageBtn} onPress={() => setSelectedImage(null)}>
-                  <Text style={styles.removeImageText}>✕</Text>
+                  <FontAwesome name="times" size={12} color="#fff" />
                 </TouchableOpacity>
               </View>
           )}
 
           <View style={styles.actionRow}>
-            <TouchableOpacity style={styles.photoButton} onPress={pickImage}>
-              <Text style={styles.photoButtonText}>Photo</Text>
-            </TouchableOpacity>
+            <View style={styles.leftActions}>
+              <TouchableOpacity style={styles.actionPillButton} onPress={pickImage}>
+                <FontAwesome name="camera" size={14} color="#ebebf5" style={{ marginRight: 6 }} />
+                <Text style={styles.actionPillText}>Photo</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity style={styles.actionPillButton} onPress={() => setShowDatePicker(true)}>
+                <FontAwesome name="calendar" size={14} color="#ebebf5" style={{ marginRight: 6 }} />
+                <Text style={styles.actionPillText}>
+                  {visitDate.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}
+                </Text>
+              </TouchableOpacity>
+            </View>
 
             <TouchableOpacity
                 style={[styles.saveButton, (!note.trim() && !selectedImage) && styles.saveButtonDisabled]}
@@ -328,33 +357,100 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
           </View>
         </View>
 
-        <Text style={styles.sectionTitle}>Memories</Text>
+        {showDatePicker && (
+            Platform.OS === 'ios' ? (
+                <View style={styles.iosInlinePickerContainer}>
+                  <View style={styles.iosPickerHeader}>
+                    <TouchableOpacity onPress={() => setShowDatePicker(false)}>
+                      <Text style={styles.iosPickerDoneText}>Done</Text>
+                    </TouchableOpacity>
+                  </View>
+                  <DateTimePicker
+                      value={visitDate}
+                      mode="date"
+                      display="spinner"
+                      textColor="white"
+                      themeVariant="dark"
+                      onChange={handleDateChange}
+                  />
+                </View>
+            ) : (
+                <DateTimePicker
+                    value={visitDate}
+                    mode="date"
+                    display="default"
+                    onChange={handleDateChange}
+                />
+            )
+        )}
+
         <FlatList
             data={memories}
             keyExtractor={(item) => item.id || Math.random().toString()}
+            showsVerticalScrollIndicator={false}
             renderItem={({ item }) => (
                 <View style={styles.logCard}>
                   <View style={styles.logCardHeader}>
-                    <Text style={styles.dateText}>{new Date(item.dateVisited).toLocaleDateString()}</Text>
+
+                    {/* Clickable Date for Editing */}
                     <TouchableOpacity
-                        style={styles.deleteLogButton}
-                        onPress={() => handleDeleteMemory(item)}
-                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                        style={styles.editableDateContainer}
+                        onPress={() => {
+                          setEditingLogId(item.id);
+                          setEditDate(new Date(item.dateVisited));
+                        }}
                     >
-                      <FontAwesome name="trash-o" size={16} color="#ff3b30" />
+                      <Text style={styles.dateText}>
+                        {new Date(item.dateVisited).toLocaleDateString([], { weekday: 'short', year: 'numeric', month: 'long', day: 'numeric' })}
+                      </Text>
+                      <FontAwesome name="pencil" size={12} color="#ebebf5" style={{ marginLeft: 6, opacity: 0.7 }} />
+                    </TouchableOpacity>
+
+                    <TouchableOpacity style={styles.deleteLogButton} onPress={() => handleDeleteMemory(item)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                      <FontAwesome name="trash-o" size={16} color="#ff453a" />
                     </TouchableOpacity>
                   </View>
+
+                  {/* Edit Date Picker Overlay (Appears inside the card being edited) */}
+                  {editingLogId === item.id && Platform.OS === 'ios' && (
+                      <View style={[styles.iosInlinePickerContainer, { marginTop: 8, marginBottom: 16 }]}>
+                        <View style={styles.iosPickerHeader}>
+                          <TouchableOpacity onPress={() => setEditingLogId(null)} style={{ flex: 1 }}>
+                            <Text style={[styles.iosPickerDoneText, { color: '#ff453a' }]}>Cancel</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity onPress={() => submitEditedDate(item.id, editDate)}>
+                            <Text style={styles.iosPickerDoneText}>Save</Text>
+                          </TouchableOpacity>
+                        </View>
+                        <DateTimePicker
+                            value={editDate}
+                            mode="date"
+                            display="spinner"
+                            textColor="white"
+                            themeVariant="dark"
+                            onChange={(e, d) => d && setEditDate(d)}
+                        />
+                      </View>
+                  )}
+
+                  {editingLogId === item.id && Platform.OS === 'android' && (
+                      <DateTimePicker
+                          value={editDate}
+                          mode="date"
+                          display="default"
+                          onChange={handleEditDateChangeAndroid}
+                      />
+                  )}
 
                   {item.photoUrls && item.photoUrls.length > 0 && (
                       <TouchableOpacity onPress={() => setExpandedImage(item.photoUrls[0])} activeOpacity={0.9}>
                         <Image source={{ uri: item.photoUrls[0] }} style={styles.memoryImage} resizeMode="cover" />
                       </TouchableOpacity>
                   )}
-
                   {item.notes ? <Text style={styles.noteText}>{item.notes}</Text> : null}
                 </View>
             )}
-            ListEmptyComponent={<Text style={styles.emptyText}>No memories yet. Add your first!</Text>}
+            ListEmptyComponent={<Text style={styles.emptyText}>No memories yet.</Text>}
         />
 
         <Modal visible={!!expandedImage} transparent={true} animationType="fade" onRequestClose={() => setExpandedImage(null)}>
@@ -367,68 +463,75 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
             )}
           </View>
         </Modal>
-      </View>
+      </BlurView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { height: '85%', backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20 },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
-  cityName: { fontSize: 22, fontWeight: 'bold', flex: 1, textAlign: 'center', marginHorizontal: 10 },
-  closeText: { fontSize: 16, color: '#ff3b30', fontWeight: '600' },
-  backText: { fontSize: 16, color: '#007AFF', fontWeight: '600' },
-  sectionTitle: { fontSize: 18, fontWeight: '600', marginBottom: 12, color: '#333' },
+  container: { height: '85%', borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: 24, overflow: 'hidden' },
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 },
+  cityName: { fontSize: 22, fontWeight: 'bold', flex: 1, textAlign: 'center', marginHorizontal: 10, color: '#fff' },
+  closeText: { fontSize: 16, color: '#0a84ff', fontWeight: '600' },
+  backText: { fontSize: 16, color: '#0a84ff', fontWeight: '600' },
 
-  savedPlaceCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#f0f8ff', borderRadius: 12, marginBottom: 10, borderWidth: 1, borderColor: '#ccebff', padding: 16 },
+  savedPlaceCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 16, marginBottom: 12, padding: 16 },
   savedPlaceContent: { flex: 1, marginRight: 10 },
-  savedPlaceName: { fontSize: 18, fontWeight: 'bold', color: '#005999' },
-  savedPlaceDate: { fontSize: 12, color: '#666', marginTop: 4 },
+  savedPlaceName: { fontSize: 18, fontWeight: '600', color: '#fff' },
+  savedPlaceDate: { fontSize: 13, color: '#ebebf5', marginTop: 4, opacity: 0.7 },
 
   actionButtonsContainer: { flexDirection: 'row', alignItems: 'center' },
-  actionButton: { padding: 8, marginLeft: 4, justifyContent: 'center', alignItems: 'center' },
+  actionButton: { padding: 8, marginLeft: 6, justifyContent: 'center', alignItems: 'center' },
   ratedBadge: { flexDirection: 'row', alignItems: 'center' },
-  ratedNumber: { fontSize: 16, fontWeight: 'bold', color: '#333', marginRight: 4 },
+  ratedNumber: { fontSize: 15, fontWeight: 'bold', color: '#fff', marginRight: 4 },
 
-  inputArea: { marginBottom: 24, backgroundColor: '#f9f9f9', padding: 12, borderRadius: 12, borderWidth: 1, borderColor: '#eee' },
-  input: { backgroundColor: '#fff', borderRadius: 8, padding: 12, minHeight: 60, maxHeight: 120, marginBottom: 12, borderWidth: 1, borderColor: '#e0e0e0' },
+  inputArea: { marginBottom: 24, backgroundColor: 'rgba(255,255,255,0.05)', padding: 12, borderRadius: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+  input: { backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 12, padding: 14, minHeight: 60, maxHeight: 120, marginBottom: 12, fontSize: 16, color: '#fff' },
+
   actionRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  photoButton: { backgroundColor: '#e8e8e8', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 8 },
-  photoButtonText: { color: '#333', fontWeight: '600' },
-  saveButton: { backgroundColor: '#34c759', paddingHorizontal: 24, paddingVertical: 12, borderRadius: 8 },
-  saveButtonDisabled: { backgroundColor: '#a1e4b3' },
-  saveButtonText: { color: '#fff', fontWeight: 'bold' },
-  imagePreviewContainer: { position: 'relative', marginBottom: 12, alignSelf: 'flex-start' },
-  imagePreview: { width: 100, height: 100, borderRadius: 8 },
-  removeImageBtn: { position: 'absolute', top: -5, right: -5, backgroundColor: 'red', width: 24, height: 24, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
-  removeImageText: { color: 'white', fontWeight: 'bold', fontSize: 12 },
+  leftActions: { flexDirection: 'row', flex: 1 },
+  actionPillButton: { flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.15)', paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10, alignItems: 'center', marginRight: 8 },
+  actionPillText: { color: '#fff', fontWeight: '600', fontSize: 13 },
 
-  logCard: { backgroundColor: '#f8f9fa', padding: 16, borderRadius: 12, marginBottom: 12, borderWidth: 1, borderColor: '#eee' },
-  logCardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  saveButton: { backgroundColor: '#0a84ff', paddingHorizontal: 20, paddingVertical: 12, borderRadius: 12 },
+  saveButtonDisabled: { backgroundColor: 'rgba(10, 132, 255, 0.3)' },
+  saveButtonText: { color: '#fff', fontWeight: 'bold' },
+
+  imagePreviewContainer: { position: 'relative', marginBottom: 12, alignSelf: 'flex-start' },
+  imagePreview: { width: 80, height: 80, borderRadius: 10 },
+  removeImageBtn: { position: 'absolute', top: -8, right: -8, backgroundColor: '#ff453a', width: 22, height: 22, borderRadius: 11, justifyContent: 'center', alignItems: 'center', borderWidth: 2, borderColor: '#333' },
+
+  logCard: { backgroundColor: 'rgba(255,255,255,0.1)', padding: 16, borderRadius: 16, marginBottom: 16 },
+  logCardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+  editableDateContainer: { flexDirection: 'row', alignItems: 'center' },
   deleteLogButton: { padding: 4 },
-  dateText: { fontSize: 12, color: '#888' },
-  memoryImage: { width: '100%', height: 200, borderRadius: 8, marginBottom: 12, backgroundColor: '#e1e4e8' },
-  noteText: { fontSize: 16, color: '#333' },
+  dateText: { fontSize: 14, color: '#ebebf5', opacity: 0.9, fontWeight: '600' },
+  memoryImage: { width: '100%', height: 200, borderRadius: 12, marginBottom: 12, backgroundColor: 'rgba(255,255,255,0.1)' },
+  noteText: { fontSize: 16, color: '#fff', lineHeight: 22 },
   loader: { marginVertical: 20 },
-  emptyText: { textAlign: 'center', color: '#999', marginTop: 20, fontStyle: 'italic' },
+  emptyText: { textAlign: 'center', color: '#8e8e93', marginTop: 30, fontSize: 16 },
 
   fullScreenImageContainer: { flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.95)', justifyContent: 'center', alignItems: 'center' },
   closeFullScreenButton: { position: 'absolute', top: 50, right: 20, zIndex: 10, padding: 16 },
   fullScreenImage: { width: '100%', height: '100%' },
 
-  // Rating Modal Styles
-  modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
-  ratingDialog: { width: '80%', backgroundColor: '#fff', borderRadius: 16, padding: 24, alignItems: 'center' },
-  ratingTitle: { fontSize: 20, fontWeight: 'bold', marginBottom: 4 },
-  ratingSubtitle: { fontSize: 14, color: '#666', marginBottom: 24, textAlign: 'center' },
-  starsRow: { flexDirection: 'row', justifyContent: 'center', marginBottom: 16 },
-  starContainer: { width: 44, height: 44, marginHorizontal: 2, position: 'relative' },
+  alertBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
+  iosAlertBox: { width: 300, borderRadius: 24, overflow: 'hidden', padding: 20, backgroundColor: 'rgba(40,40,40,0.85)' },
+  iosAlertHeader: { alignItems: 'center', marginBottom: 16 },
+  iosAlertTitle: { fontSize: 18, fontWeight: '600', color: '#fff', textAlign: 'center', marginBottom: 8 },
+  iosAlertSubtitle: { fontSize: 15, color: '#a0a0a5', textAlign: 'center', lineHeight: 20 },
+
+  starsRow: { flexDirection: 'row', justifyContent: 'center', paddingBottom: 24 },
+  starContainer: { width: 40, height: 40, marginHorizontal: 2, position: 'relative' },
   starIconWrapper: { position: 'absolute', width: '100%', height: '100%', justifyContent: 'center', alignItems: 'center' },
   starTouchZones: { flex: 1, flexDirection: 'row' },
   halfStarZone: { flex: 1, height: '100%' },
-  ratingDisplay: { fontSize: 18, fontWeight: 'bold', color: '#333', marginBottom: 24 },
-  ratingActionRow: { flexDirection: 'row', width: '100%', justifyContent: 'space-between', borderTopWidth: 1, borderTopColor: '#eee', paddingTop: 16 },
-  ratingCancelBtn: { flex: 1, alignItems: 'center', paddingVertical: 8 },
-  ratingCancelText: { color: '#ff3b30', fontSize: 16, fontWeight: '600' },
-  ratingDoneBtn: { flex: 1, alignItems: 'center', paddingVertical: 8, borderLeftWidth: 1, borderLeftColor: '#eee' },
-  ratingDoneText: { color: '#007AFF', fontSize: 16, fontWeight: 'bold' }
+
+  iosAlertButtonRow: { flexDirection: 'row', justifyContent: 'space-between' },
+  iosAlertPillButton: { flex: 1, paddingVertical: 14, borderRadius: 16, alignItems: 'center', justifyContent: 'center', marginHorizontal: 6 },
+  iosAlertButtonTextCancel: { fontSize: 17, color: '#fff', fontWeight: '500' },
+  iosAlertButtonTextConfirm: { fontSize: 17, color: '#0a84ff', fontWeight: '600' },
+
+  iosInlinePickerContainer: { backgroundColor: 'rgba(30,30,30,0.8)', borderRadius: 16, marginBottom: 16, overflow: 'hidden', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+  iosPickerHeader: { flexDirection: 'row', justifyContent: 'flex-end', padding: 12, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.1)', backgroundColor: 'rgba(255,255,255,0.05)' },
+  iosPickerDoneText: { color: '#0a84ff', fontSize: 16, fontWeight: 'bold' }
 });
