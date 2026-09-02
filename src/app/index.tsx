@@ -8,8 +8,15 @@ import CityDetailSheet from '../components/CityDetailSheet';
 import LinkAccountScreen from '../components/LinkAccountScreen';
 import LoginScreen from '../components/LoginScreen';
 import { auth } from '../config/firebaseConfig';
-import { CITY_CATALOG, City } from '../constants/cities';
 import { getAllSavedPlaces, getUnlockedCities, getUserProfile, linkCoupleAccounts, savePlace, unlockCity, deleteUnlockedCity, getAllCoupleMemories } from '../services/firestoreService';
+
+// Define the City interface right here since we deleted the separate file
+export interface City {
+  id: string;
+  name: string;
+  latitude: number;
+  longitude: number;
+}
 
 const LITHUANIA_REGION = { latitude: 55.1694, longitude: 23.8813, latitudeDelta: 3.2, longitudeDelta: 4.8 };
 const ZOOM_THRESHOLD = 0.15;
@@ -103,11 +110,14 @@ export default function App() {
       const abortController = new AbortController();
       citySearchAbortControllerRef.current = abortController;
       try {
-        const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(`${trimmed}, Lietuva`)}&format=json&limit=5&addressdetails=1&countrycodes=lt&accept-language=lt`;
+        const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(trimmed)}&format=json&limit=7&featuretype=settlement&addressdetails=1&accept-language=lt,en`;
         const response = await fetch(url, { signal: abortController.signal, headers: { 'User-Agent': 'ActivityMapApp/1.0', 'Accept-Language': 'lt, en;q=0.5' } });
+
         if (!response.ok) { setIsSearchingCity(false); return; }
+
         const contentType = response.headers.get('content-type') || '';
         let data: any[] = [];
+
         if (!contentType.includes('application/json')) {
           const textResponse = await response.text();
           if (textResponse.trim().startsWith('<')) { setIsSearchingCity(false); return; }
@@ -115,13 +125,30 @@ export default function App() {
         } else {
           data = await response.json();
         }
+
         if (Array.isArray(data)) {
           const mapped: City[] = data
-              .map((item: any) => ({ id: `osm_${item.place_id}`, name: item.name || item.display_name.split(',')[0].trim(), latitude: parseFloat(item.lat), longitude: parseFloat(item.lon) }))
+              .map((item: any) => {
+                const cityName = item.name || item.address?.city || item.address?.town || item.address?.village || item.display_name.split(',')[0];
+                const country = item.address?.country || '';
+                const fullName = country ? `${cityName}, ${country}` : cityName;
+
+                return {
+                  id: `osm_${item.place_id}`,
+                  name: fullName,
+                  latitude: parseFloat(item.lat),
+                  longitude: parseFloat(item.lon)
+                };
+              })
               .filter((c) => !unlockedCities.some((u) => normalizeText(u.name) === normalizeText(c.name)));
+
           setCitySearchResults(mapped);
         }
-      } catch (e: any) { if (e.name !== 'AbortError') console.error(e); } finally { setIsSearchingCity(false); }
+      } catch (e: any) {
+        if (e.name !== 'AbortError') console.error(e);
+      } finally {
+        setIsSearchingCity(false);
+      }
     }, 400);
   };
 
@@ -157,10 +184,16 @@ export default function App() {
       const abortController = new AbortController();
       searchAbortControllerRef.current = abortController;
       try {
-        const query = selectedCity ? `${trimmed}, ${selectedCity.name}, Lietuva` : `${trimmed}, Lietuva`;
-        const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=5&addressdetails=1&countrycodes=lt&accept-language=lt`;
+        // Use the selected city name (which now includes the country) and remove the hardcoded "Lietuva"
+        const query = selectedCity ? `${trimmed}, ${selectedCity.name}` : trimmed;
+
+        // Removed countrycodes=lt so it searches the entire globe
+        const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=7&addressdetails=1&accept-language=lt,en`;
+
         const response = await fetch(url, { signal: abortController.signal, headers: { 'User-Agent': 'ActivityMapApp/1.0', 'Accept-Language': 'lt, en;q=0.5' } });
+
         if (!response.ok) { setIsSearchingLocation(false); return; }
+
         const contentType = response.headers.get('content-type') || '';
         if (!contentType.includes('application/json')) {
           const textResponse = await response.text();
@@ -170,7 +203,11 @@ export default function App() {
           const data = await response.json();
           setSearchResults(Array.isArray(data) ? data : []);
         }
-      } catch (e: any) { if (e.name !== 'AbortError') console.error(e); } finally { setIsSearchingLocation(false); }
+      } catch (e: any) {
+        if (e.name !== 'AbortError') console.error(e);
+      } finally {
+        setIsSearchingLocation(false);
+      }
     }, 400);
   };
 
@@ -223,7 +260,7 @@ export default function App() {
     Keyboard.dismiss();
 
     const finalPlaceData = { ...previewPlace };
-    const placeIdStr = String(finalPlaceData.place_id); // Convert to string safely
+    const placeIdStr = String(finalPlaceData.place_id);
 
     if (placeIdStr.startsWith('custom_') || placeIdStr.startsWith('poi_')) {
       finalPlaceData.name = customPlaceName.trim();
@@ -254,20 +291,13 @@ export default function App() {
     } catch (error: any) { Alert.alert("Error", error.message); }
   };
 
-  const availableCitiesToAdd = CITY_CATALOG
-      .filter(c => !unlockedCities.some(u => u.id === c.id || normalizeText(u.name) === normalizeText(c.name)))
-      .filter(c => !citySearchQuery.trim() || normalizeText(c.name).includes(normalizeText(citySearchQuery.trim())));
+  const combinedCitiesToAdd = citySearchResults;
 
-  const combinedCitiesToAdd = [
-    ...availableCitiesToAdd,
-    ...citySearchResults.filter(osmCity => !availableCitiesToAdd.some(c => normalizeText(c.name) === normalizeText(osmCity.name)) && !unlockedCities.some(u => normalizeText(u.name) === normalizeText(osmCity.name))),
-  ];
-
-  const totalCities = CITY_CATALOG.length;
+  // --- UPDATED STATS MATH ---
   const visitedCities = unlockedCities.length;
-  const unvisitedCities = Math.max(0, totalCities - visitedCities);
-  const visitedPercentage = totalCities > 0 ? Math.round((visitedCities / totalCities) * 100) : 0;
   const totalPlaces = savedMapPlaces.length;
+  const totalMemories = galleryMemories.length;
+  const totalPhotos = galleryMemories.filter(m => m.photoUrls && m.photoUrls.length > 0).length;
 
   if (loading) return <View style={styles.centered}><ActivityIndicator size="large" color="#fff" /></View>;
   if (!user) return <LoginScreen />;
@@ -416,32 +446,43 @@ export default function App() {
                                   </View>
                               )
                             }}
-                            ListEmptyComponent={<Text style={styles.emptyText}>No memories added yet.</Text>}
+                            ListEmptyComponent={
+                              <View style={styles.emptyListContainer}>
+                                {isSearchingCity ? (
+                                    <ActivityIndicator size="small" color="#fff" />
+                                ) : (
+                                    <Text style={styles.emptyListText}>
+                                      {citySearchQuery.length < 2 ? "Type a city name to search globally" : "No cities found"}
+                                    </Text>
+                                )}
+                              </View>
+                            }
                         />
                     )}
                   </View>
               )}
 
+              {/* UPDATED STATS TAB */}
               {settingsTab === 'stats' && (
                   <View style={styles.tabContentArea}>
                     <View style={styles.statsRow}>
                       <View style={styles.statCard}>
-                        <Text style={styles.statValue}>{visitedPercentage}%</Text>
-                        <Text style={styles.statLabel}>Lithuania Explored</Text>
-                      </View>
-                      <View style={styles.statCard}>
                         <Text style={styles.statValue}>{visitedCities}</Text>
                         <Text style={styles.statLabel}>Cities Visited</Text>
+                      </View>
+                      <View style={styles.statCard}>
+                        <Text style={styles.statValue}>{totalPlaces}</Text>
+                        <Text style={styles.statLabel}>Places Saved</Text>
                       </View>
                     </View>
                     <View style={styles.statsRow}>
                       <View style={styles.statCard}>
-                        <Text style={styles.statValue}>{totalPlaces}</Text>
-                        <Text style={styles.statLabel}>Total Places Saved</Text>
+                        <Text style={styles.statValue}>{totalMemories}</Text>
+                        <Text style={styles.statLabel}>Total Memories</Text>
                       </View>
                       <View style={styles.statCard}>
-                        <Text style={styles.statValue}>{unvisitedCities}</Text>
-                        <Text style={styles.statLabel}>Cities Left to Visit</Text>
+                        <Text style={styles.statValue}>{totalPhotos}</Text>
+                        <Text style={styles.statLabel}>Photos Taken</Text>
                       </View>
                     </View>
                   </View>
@@ -469,10 +510,7 @@ export default function App() {
         </Modal>
 
         <Modal visible={mapMode === 'city_menu'} transparent animationType="fade">
-          {/* The outer Pressable acts as the background click detector */}
           <Pressable style={styles.modalBackdrop} onPress={() => setMapMode('default')}>
-
-            {/* The inner Pressable stops the click from triggering when you tap the actual menu */}
             <Pressable onPress={(e) => e.stopPropagation()} style={{ width: '100%' }}>
               <BlurView intensity={90} tint="dark" style={styles.menuSheet}>
                 <Text style={styles.menuTitle}>{selectedCity?.name}</Text>
@@ -495,7 +533,6 @@ export default function App() {
                 </TouchableOpacity>
               </BlurView>
             </Pressable>
-
           </Pressable>
         </Modal>
 
@@ -523,7 +560,17 @@ export default function App() {
                         <Text style={styles.cityListText}>{item.name}</Text>
                       </TouchableOpacity>
                   )}
-                  ListEmptyComponent={<View style={styles.emptyListContainer}>{isSearchingCity ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.emptyListText}>No cities found</Text>}</View>}
+                  ListEmptyComponent={
+                    <View style={styles.emptyListContainer}>
+                      {isSearchingCity ? (
+                          <ActivityIndicator size="small" color="#fff" />
+                      ) : (
+                          <Text style={styles.emptyListText}>
+                            {citySearchQuery.length < 2 ? "Type a city name to search globally" : "No cities found"}
+                          </Text>
+                      )}
+                    </View>
+                  }
               />
             </BlurView>
           </KeyboardAvoidingView>
@@ -564,7 +611,6 @@ const styles = StyleSheet.create({
   previewName: { fontSize: 20, fontWeight: 'bold', marginBottom: 16, textAlign: 'center', color: '#fff' },
   customNameInput: { backgroundColor: 'rgba(255,255,255,0.1)', color: '#fff', fontSize: 18, fontWeight: 'bold', borderRadius: 12, padding: 16, width: '100%', textAlign: 'center', marginBottom: 16 },
 
-  // NEW: Cancel & Save Action Row
   previewActionRow: { flexDirection: 'row', justifyContent: 'space-between', width: '100%' },
   cancelPreviewButton: { backgroundColor: 'rgba(255,255,255,0.15)', paddingVertical: 14, borderRadius: 14, flex: 1, marginRight: 6, alignItems: 'center' },
   cancelPreviewText: { color: '#fff', fontSize: 17, fontWeight: '600' },
