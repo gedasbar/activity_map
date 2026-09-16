@@ -12,11 +12,11 @@ import MapView, { Marker, PROVIDER_DEFAULT, Region } from 'react-native-maps';
 import CityDetailSheet from '../components/CityDetailSheet';
 import LinkAccountScreen from '../components/LinkAccountScreen';
 import LoginScreen from '../components/LoginScreen';
-import { auth } from '@/config/firebaseConfig';
+import { auth } from '../config/firebaseConfig';
 import {
   deleteUnlockedCity, getAllCoupleMemories, getAllSavedPlaces,
   getUnlockedCities, getUserProfile, linkCoupleAccounts, savePlace, unlockCity
-} from '@/services/firestoreService';
+} from '../services/firestoreService';
 
 export interface City {
   id: string;
