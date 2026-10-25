@@ -1,0 +1,30 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper function to check if the request is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Users collection
+    match /users/{userId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // Unlocked cities
+    match /unlocked_cities/{cityDocId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // Saved places
+    match /saved_places/{placeDocId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // Visited logs & memories
+    match /visited_logs/{logDocId} {
+      allow read, write: if isAuthenticated();
+    }
+  }
+}

@@ -74,17 +74,26 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
   }, [cityId]);
 
   const loadSavedPlaces = async () => {
-    setIsLoadingPlaces(true);
-    const places = await getCityPlaces(coupleId, cityId);
-    setSavedPlaces(places);
-    setIsLoadingPlaces(false);
+    try {
+      setIsLoadingPlaces(true);
+      const places = await getCityPlaces(coupleId, cityId);
+      setSavedPlaces(places);
+    } catch (e: any) {
+      console.error("Error loading saved places:", e);
+    } finally {
+      setIsLoadingPlaces(false);
+    }
   };
 
   const openPlace = async (place: any) => {
-    setActivePlace(place);
-    setViewMode('place');
-    const fetchedMemories = await getPlaceMemories(coupleId, place.placeId);
-    setMemories(fetchedMemories);
+    try {
+      setActivePlace(place);
+      setViewMode('place');
+      const fetchedMemories = await getPlaceMemories(coupleId, place.placeId);
+      setMemories(fetchedMemories);
+    } catch (e: any) {
+      console.error("Error loading place memories:", e);
+    }
   };
 
   const pickImage = async () => {

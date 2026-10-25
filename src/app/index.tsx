@@ -4,14 +4,19 @@ import { onAuthStateChanged, signOut, User } from 'firebase/auth';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator, Alert, Dimensions, FlatList, Image, Keyboard,
-  KeyboardAvoidingView, Modal, Platform, PanResponder, Pressable, StyleSheet,
-  Text, TextInput, TouchableOpacity, View, Animated as RNAnimated
+  KeyboardAvoidingView, Modal,
+  PanResponder,
+  Platform,
+  Pressable,
+  Animated as RNAnimated,
+  StyleSheet,
+  Text, TextInput, TouchableOpacity, View
 } from 'react-native';
 import MapView, { Marker, PROVIDER_DEFAULT, Region } from 'react-native-maps';
 
+import BottomSheet, { BottomSheetBackgroundProps, BottomSheetView } from '@gorhom/bottom-sheet';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import BottomSheet, { BottomSheetView, BottomSheetBackgroundProps } from '@gorhom/bottom-sheet';
-import Reanimated, { useAnimatedStyle, interpolate, Extrapolation } from 'react-native-reanimated';
+import Reanimated, { Extrapolation, interpolate, useAnimatedStyle } from 'react-native-reanimated';
 
 import CityDetailSheet from '../components/CityDetailSheet';
 import LinkAccountScreen from '../components/LinkAccountScreen';
@@ -48,10 +53,10 @@ const ReanimatedBlurView = Reanimated.createAnimatedComponent(BlurView);
 const LiquidGlassBackground: React.FC<BottomSheetBackgroundProps> = ({ style, animatedIndex }) => {
   const solidOverlayStyle = useAnimatedStyle(() => {
     const opacity = interpolate(
-        animatedIndex.value,
-        [0, 0.5, 1],
-        [0, 0.8, 1],
-        Extrapolation.CLAMP
+      animatedIndex.value,
+      [0, 0.5, 1],
+      [0, 0.8, 1],
+      Extrapolation.CLAMP
     );
     return {
       opacity,
@@ -60,11 +65,11 @@ const LiquidGlassBackground: React.FC<BottomSheetBackgroundProps> = ({ style, an
   });
 
   return (
-      <View style={[style, styles.backgroundWrapper]}>
-        {/* FIXED: Using styles.absoluteFill instead of StyleSheet.absoluteFillObject */}
-        <ReanimatedBlurView intensity={90} tint="dark" style={styles.absoluteFill} />
-        <Reanimated.View style={[styles.absoluteFill, solidOverlayStyle]} />
-      </View>
+    <View style={[style, styles.backgroundWrapper]}>
+      {/* FIXED: Using styles.absoluteFill instead of StyleSheet.absoluteFillObject */}
+      <ReanimatedBlurView intensity={90} tint="dark" style={styles.absoluteFill} />
+      <Reanimated.View style={[styles.absoluteFill, solidOverlayStyle]} />
+    </View>
   );
 };
 
@@ -72,14 +77,14 @@ const FullScreenImageItem = ({ item, placeName }: { item: any, placeName: string
   const [isImageLoading, setIsImageLoading] = useState(true);
 
   return (
-      <View style={styles.fullScreenItemContainer}>
-        {isImageLoading && <ActivityIndicator size="large" color="#0a84ff" style={styles.fullScreenLoader} />}
-        <Image source={{ uri: item.url }} style={styles.fullScreenImage} resizeMode="contain" onLoadEnd={() => setIsImageLoading(false)} />
-        <View style={styles.fullScreenDetails}>
-          <Text style={styles.fullScreenPlaceName}>{placeName}</Text>
-          <Text style={styles.fullScreenDate}>{new Date(item.dateVisited).toLocaleDateString()}</Text>
-        </View>
+    <View style={styles.fullScreenItemContainer}>
+      {isImageLoading && <ActivityIndicator size="large" color="#0a84ff" style={styles.fullScreenLoader} />}
+      <Image source={{ uri: item.url }} style={styles.fullScreenImage} resizeMode="contain" onLoadEnd={() => setIsImageLoading(false)} />
+      <View style={styles.fullScreenDetails}>
+        <Text style={styles.fullScreenPlaceName}>{placeName}</Text>
+        <Text style={styles.fullScreenDate}>{new Date(item.dateVisited).toLocaleDateString()}</Text>
       </View>
+    </View>
   );
 };
 
@@ -158,46 +163,79 @@ export default function App() {
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       if (currentUser) {
-        setLoading(true); setUser(currentUser);
-        const profile = await getUserProfile(currentUser.uid);
-        if (profile?.coupleId) {
-          setHasLinkedAccount(true); setMyCoupleId(profile.coupleId);
-          await loadCitiesAndPlaces(profile.coupleId); await loadGallery(profile.coupleId);
+        setLoading(true);
+        setUser(currentUser);
+        try {
+          const profile = await getUserProfile(currentUser.uid);
+          if (profile?.coupleId) {
+            setHasLinkedAccount(true);
+            setMyCoupleId(profile.coupleId);
+            await loadCitiesAndPlaces(profile.coupleId);
+            await loadGallery(profile.coupleId);
+          } else {
+            setHasLinkedAccount(false);
+          }
+        } catch (error: any) {
+          console.error("Error loading user profile or data:", error);
+          if (error?.code === 'permission-denied' || error?.message?.includes('permissions')) {
+            Alert.alert(
+              "Firestore Permission Error",
+              "Access denied by Firestore security rules. Please update the rules in Firebase Console to allow authenticated read/write access."
+            );
+          }
+        } finally {
+          setLoading(false);
         }
-        setLoading(false);
       } else {
-        setUser(null); setHasLinkedAccount(false); setLoading(false);
+        setUser(null);
+        setHasLinkedAccount(false);
+        setLoading(false);
       }
     });
     return unsubscribe;
   }, []);
 
   const loadCitiesAndPlaces = async (coupleId: string) => {
-    const fetchedData = await getUnlockedCities(coupleId);
-    const uniqueCitiesMap = new Map();
-    fetchedData.forEach((data: any) => {
-      const cleanName = normalizeText(data.name || '');
-      const uniqueKey = data.cityId || cleanName;
-      if (!uniqueCitiesMap.has(uniqueKey)) {
-        uniqueCitiesMap.set(uniqueKey, { id: data.cityId, name: data.name, latitude: data.latitude, longitude: data.longitude });
-      }
-    });
-    setUnlockedCities(Array.from(uniqueCitiesMap.values()));
-    setSavedMapPlaces(await getAllSavedPlaces(coupleId));
+    try {
+      const fetchedData = await getUnlockedCities(coupleId);
+      const uniqueCitiesMap = new Map();
+      fetchedData.forEach((data: any) => {
+        const cleanName = normalizeText(data.name || '');
+        const uniqueKey = data.cityId || cleanName;
+        if (!uniqueCitiesMap.has(uniqueKey)) {
+          uniqueCitiesMap.set(uniqueKey, { id: data.cityId, name: data.name, latitude: data.latitude, longitude: data.longitude });
+        }
+      });
+      setUnlockedCities(Array.from(uniqueCitiesMap.values()));
+      const places = await getAllSavedPlaces(coupleId);
+      setSavedMapPlaces(places);
+    } catch (error) {
+      console.error("Error loading cities and places:", error);
+    }
   };
 
   const loadGallery = async (coupleId: string) => {
-    setIsLoadingGallery(true);
-    setGalleryMemories(await getAllCoupleMemories(coupleId));
-    setIsLoadingGallery(false);
+    try {
+      setIsLoadingGallery(true);
+      const memories = await getAllCoupleMemories(coupleId);
+      setGalleryMemories(memories);
+    } catch (error) {
+      console.error("Error loading gallery:", error);
+    } finally {
+      setIsLoadingGallery(false);
+    }
   };
 
   const handleAddNewCity = async (city: City) => {
     if (!myCoupleId) return;
-    await unlockCity(myCoupleId, city);
-    await loadCitiesAndPlaces(myCoupleId);
-    setShowAddCityModal(false); setCitySearchQuery(''); setCitySearchResults([]);
-    mapRef.current?.animateToRegion({ latitude: city.latitude, longitude: city.longitude, latitudeDelta: 0.15, longitudeDelta: 0.15 });
+    try {
+      await unlockCity(myCoupleId, city);
+      await loadCitiesAndPlaces(myCoupleId);
+      setShowAddCityModal(false); setCitySearchQuery(''); setCitySearchResults([]);
+      mapRef.current?.animateToRegion({ latitude: city.latitude, longitude: city.longitude, latitudeDelta: 0.15, longitudeDelta: 0.15 });
+    } catch (err: any) {
+      Alert.alert('Error', err.message);
+    }
   };
 
   const handleCitySearch = (text: string) => {
@@ -225,11 +263,11 @@ export default function App() {
 
         if (Array.isArray(data)) {
           const mapped: City[] = data
-              .map((item: any) => {
-                const cityName = item.name || item.address?.city || item.address?.town || item.address?.village || item.display_name.split(',')[0];
-                const country = item.address?.country || '';
-                return { id: `osm_${item.place_id}`, name: country ? `${cityName}, ${country}` : cityName, latitude: parseFloat(item.lat), longitude: parseFloat(item.lon) };
-              }).filter((c) => !unlockedCities.some((u) => normalizeText(u.name) === normalizeText(c.name)));
+            .map((item: any) => {
+              const cityName = item.name || item.address?.city || item.address?.town || item.address?.village || item.display_name.split(',')[0];
+              const country = item.address?.country || '';
+              return { id: `osm_${item.place_id}`, name: country ? `${cityName}, ${country}` : cityName, latitude: parseFloat(item.lat), longitude: parseFloat(item.lon) };
+            }).filter((c) => !unlockedCities.some((u) => normalizeText(u.name) === normalizeText(c.name)));
           setCitySearchResults(mapped);
         }
       } catch (e: any) { if (e.name !== 'AbortError') console.error(e); } finally { setIsSearchingCity(false); }
@@ -239,7 +277,8 @@ export default function App() {
   const handleDeleteCity = (city: City) => {
     Alert.alert('Remove City', `Are you sure you want to remove ${city.name}?`, [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Remove', style: 'destructive', onPress: async () => {
+      {
+        text: 'Remove', style: 'destructive', onPress: async () => {
           if (!myCoupleId) return;
           try {
             await deleteUnlockedCity(myCoupleId, city.id); await loadCitiesAndPlaces(myCoupleId);
@@ -306,10 +345,14 @@ export default function App() {
     const placeIdStr = String(finalPlaceData.place_id);
     if (placeIdStr.startsWith('custom_') || placeIdStr.startsWith('poi_')) finalPlaceData.name = customPlaceName.trim();
 
-    await savePlace(myCoupleId, selectedCity.id, finalPlaceData);
-    setPreviewPlace(null); setSearchQuery(''); setCustomPlaceName(''); setMapMode('default'); setSelectedCity(null);
-    await loadCitiesAndPlaces(myCoupleId);
-    mapRef.current?.animateToRegion({ latitude: selectedCity.latitude, longitude: selectedCity.longitude, latitudeDelta: 0.1, longitudeDelta: 0.1 });
+    try {
+      await savePlace(myCoupleId, selectedCity.id, finalPlaceData);
+      setPreviewPlace(null); setSearchQuery(''); setCustomPlaceName(''); setMapMode('default'); setSelectedCity(null);
+      await loadCitiesAndPlaces(myCoupleId);
+      mapRef.current?.animateToRegion({ latitude: selectedCity.latitude, longitude: selectedCity.longitude, latitudeDelta: 0.1, longitudeDelta: 0.1 });
+    } catch (err: any) {
+      Alert.alert('Error adding place', err.message);
+    }
   };
 
   const cancelSearch = () => {
@@ -342,230 +385,230 @@ export default function App() {
   if (!hasLinkedAccount) return <LinkAccountScreen onLinked={() => setHasLinkedAccount(true)} />;
 
   return (
-      <GestureHandlerRootView style={styles.container}>
-        <MapView
-            ref={mapRef}
-            provider={PROVIDER_DEFAULT}
-            style={styles.map}
-            initialRegion={LITHUANIA_REGION}
-            onRegionChangeComplete={handleRegionChangeComplete}
-            onLongPress={handleMapLongPress}
-            onPoiClick={handlePoiClick}
-            onPress={handleMapPress}
+    <GestureHandlerRootView style={styles.container}>
+      <MapView
+        ref={mapRef}
+        provider={PROVIDER_DEFAULT}
+        style={styles.map}
+        initialRegion={LITHUANIA_REGION}
+        onRegionChangeComplete={handleRegionChangeComplete}
+        onLongPress={handleMapLongPress}
+        onPoiClick={handlePoiClick}
+        onPress={handleMapPress}
+      >
+        {unlockedCities.map((city, index) => (
+          <Marker key={`city-${city.id}-${index}`} coordinate={{ latitude: city.latitude, longitude: city.longitude }} title={city.name} pinColor="purple" onPress={(e) => { e.stopPropagation(); onCityTap(city); }} />
+        ))}
+        {showPlaces && savedMapPlaces.map((place) => {
+          if (!place.lat || !place.lon) return null;
+          return <Marker key={`place-${place.id}`} coordinate={{ latitude: parseFloat(place.lat), longitude: parseFloat(place.lon) }} title={place.name}><FontAwesome name="star" size={24} color="#FFCC00" /></Marker>;
+        })}
+        {previewPlace && <Marker coordinate={{ latitude: parseFloat(previewPlace.lat), longitude: parseFloat(previewPlace.lon) }} pinColor="blue" title={previewPlace.name || customPlaceName || previewPlace.display_name.split(',')[0]} />}
+      </MapView>
+
+      {mapMode === 'default' && (
+        <View style={styles.topToolbar}>
+          <TouchableOpacity onPress={() => setShowAddCityModal(true)} style={styles.glassButtonWrapper}>
+            <BlurView intensity={85} tint="dark" style={styles.glassButton}><Text style={styles.addCityText}>+ Add City</Text></BlurView>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => { setShowSettingsModal(true); setSettingsIndex(0); setSettingsTab('stats'); loadGallery(myCoupleId); }} style={styles.glassButtonWrapper}>
+            <BlurView intensity={85} tint="dark" style={styles.glassIcon}><FontAwesome name="bars" size={20} color="#fff" /></BlurView>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {mapMode === 'search_place' && (
+        <View style={styles.searchOverlay}>
+          <BlurView intensity={85} tint="dark" style={styles.searchHeaderGlass}>
+            <TouchableOpacity onPress={cancelSearch} style={styles.circularCloseButtonHeader}><FontAwesome name="times" size={16} color="#ebebf5" /></TouchableOpacity>
+            <TextInput style={styles.searchInput} placeholder={`Search in ${selectedCity?.name}...`} placeholderTextColor="#8e8e93" value={searchQuery} onChangeText={handleOSMSearch} />
+            {isSearchingLocation && <ActivityIndicator size="small" color="#fff" style={{ marginLeft: 8 }} />}
+          </BlurView>
+          {searchResults.length > 0 && (
+            <BlurView intensity={85} tint="dark" style={styles.searchResultsBox}>
+              {searchResults.map((item) => (
+                <TouchableOpacity key={item.place_id} style={styles.resultItem} onPress={() => selectSearchResult(item)}>
+                  <Text style={styles.resultName} numberOfLines={1}>{item.name || item.display_name.split(',')[0]}</Text>
+                  <Text style={styles.resultAddress} numberOfLines={1}>{item.display_name}</Text>
+                </TouchableOpacity>
+              ))}
+            </BlurView>
+          )}
+        </View>
+      )}
+
+      {mapMode === 'search_place' && previewPlace && (
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.previewBottomBar}>
+          <BlurView intensity={85} tint="dark" style={styles.previewGlass}>
+            {(String(previewPlace.place_id).startsWith('custom_') || String(previewPlace.place_id).startsWith('poi_')) ? (
+              <TextInput style={styles.customNameInput} placeholder="Name this spot" placeholderTextColor="#8e8e93" value={customPlaceName} onChangeText={setCustomPlaceName} autoFocus={String(previewPlace.place_id).startsWith('custom_')} />
+            ) : (<Text style={styles.previewName} numberOfLines={1}>{previewPlace.name || previewPlace.display_name.split(',')[0]}</Text>)}
+            <View style={styles.previewActionRow}>
+              <TouchableOpacity style={styles.cancelPreviewButton} onPress={cancelSearch}><Text style={styles.cancelPreviewText}>Cancel</Text></TouchableOpacity>
+              <TouchableOpacity style={[styles.savePreviewButton, (String(previewPlace.place_id).startsWith('custom_') || String(previewPlace.place_id).startsWith('poi_')) && !customPlaceName.trim() ? { backgroundColor: 'rgba(255,255,255,0.2)' } : {}]} disabled={(String(previewPlace.place_id).startsWith('custom_') || String(previewPlace.place_id).startsWith('poi_')) && !customPlaceName.trim()} onPress={confirmAddPlace}><Text style={styles.savePreviewText}>Save</Text></TouchableOpacity>
+            </View>
+          </BlurView>
+        </KeyboardAvoidingView>
+      )}
+
+      {/* --- SETTINGS BURGER MENU --- */}
+      {showSettingsModal && (
+        <BottomSheet
+          ref={settingsSheetRef}
+          index={settingsIndex}
+          snapPoints={['35%', '90%']}
+          enablePanDownToClose={true}
+          backgroundComponent={LiquidGlassBackground}
+          handleIndicatorStyle={styles.handleIndicator}
+          onChange={(index) => {
+            if (index === -1) setShowSettingsModal(false);
+            setSettingsIndex(index);
+            if (index === 0) setSettingsTab('stats');
+          }}
         >
-          {unlockedCities.map((city, index) => (
-              <Marker key={`city-${city.id}-${index}`} coordinate={{ latitude: city.latitude, longitude: city.longitude }} title={city.name} pinColor="purple" onPress={(e) => { e.stopPropagation(); onCityTap(city); }} />
-          ))}
-          {showPlaces && savedMapPlaces.map((place) => {
-            if (!place.lat || !place.lon) return null;
-            return <Marker key={`place-${place.id}`} coordinate={{ latitude: parseFloat(place.lat), longitude: parseFloat(place.lon) }} title={place.name}><FontAwesome name="star" size={24} color="#FFCC00" /></Marker>;
-          })}
-          {previewPlace && <Marker coordinate={{ latitude: parseFloat(previewPlace.lat), longitude: parseFloat(previewPlace.lon) }} pinColor="blue" title={previewPlace.name || customPlaceName || previewPlace.display_name.split(',')[0]} />}
-        </MapView>
-
-        {mapMode === 'default' && (
-            <View style={styles.topToolbar}>
-              <TouchableOpacity onPress={() => setShowAddCityModal(true)} style={styles.glassButtonWrapper}>
-                <BlurView intensity={85} tint="dark" style={styles.glassButton}><Text style={styles.addCityText}>+ Add City</Text></BlurView>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={() => { setShowSettingsModal(true); setSettingsIndex(0); setSettingsTab('stats'); loadGallery(myCoupleId); }} style={styles.glassButtonWrapper}>
-                <BlurView intensity={85} tint="dark" style={styles.glassIcon}><FontAwesome name="bars" size={20} color="#fff" /></BlurView>
+          <BottomSheetView style={styles.contentContainer}>
+            <View style={styles.sheetHeader}>
+              <Text style={styles.sheetTitle}>Menu</Text>
+              <TouchableOpacity onPress={() => settingsSheetRef.current?.close()} style={styles.circularCloseButtonHeader}>
+                <FontAwesome name="times" size={16} color="#ebebf5" />
               </TouchableOpacity>
             </View>
-        )}
 
-        {mapMode === 'search_place' && (
-            <View style={styles.searchOverlay}>
-              <BlurView intensity={85} tint="dark" style={styles.searchHeaderGlass}>
-                <TouchableOpacity onPress={cancelSearch} style={styles.circularCloseButtonHeader}><FontAwesome name="times" size={16} color="#ebebf5" /></TouchableOpacity>
-                <TextInput style={styles.searchInput} placeholder={`Search in ${selectedCity?.name}...`} placeholderTextColor="#8e8e93" value={searchQuery} onChangeText={handleOSMSearch} />
-                {isSearchingLocation && <ActivityIndicator size="small" color="#fff" style={{ marginLeft: 8 }} />}
-              </BlurView>
-              {searchResults.length > 0 && (
-                  <BlurView intensity={85} tint="dark" style={styles.searchResultsBox}>
-                    {searchResults.map((item) => (
-                        <TouchableOpacity key={item.place_id} style={styles.resultItem} onPress={() => selectSearchResult(item)}>
-                          <Text style={styles.resultName} numberOfLines={1}>{item.name || item.display_name.split(',')[0]}</Text>
-                          <Text style={styles.resultAddress} numberOfLines={1}>{item.display_name}</Text>
-                        </TouchableOpacity>
-                    ))}
-                  </BlurView>
-              )}
-            </View>
-        )}
+            {settingsIndex > 0 && (
+              <View style={styles.tabsContainer}>
+                <TouchableOpacity style={[styles.tabButton, settingsTab === 'gallery' && styles.tabButtonActive]} onPress={() => setSettingsTab('gallery')}><Text style={[styles.tabText, settingsTab === 'gallery' && styles.tabTextActive]}>Gallery</Text></TouchableOpacity>
+                <TouchableOpacity style={[styles.tabButton, settingsTab === 'memories' && styles.tabButtonActive]} onPress={() => setSettingsTab('memories')}><Text style={[styles.tabText, settingsTab === 'memories' && styles.tabTextActive]}>Memories</Text></TouchableOpacity>
+                <TouchableOpacity style={[styles.tabButton, settingsTab === 'stats' && styles.tabButtonActive]} onPress={() => setSettingsTab('stats')}><Text style={[styles.tabText, settingsTab === 'stats' && styles.tabTextActive]}>Stats</Text></TouchableOpacity>
+                <TouchableOpacity style={[styles.tabButton, settingsTab === 'sync' && styles.tabButtonActive]} onPress={() => setSettingsTab('sync')}><Text style={[styles.tabText, settingsTab === 'sync' && styles.tabTextActive]}>Sync</Text></TouchableOpacity>
+              </View>
+            )}
 
-        {mapMode === 'search_place' && previewPlace && (
-            <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.previewBottomBar}>
-              <BlurView intensity={85} tint="dark" style={styles.previewGlass}>
-                {(String(previewPlace.place_id).startsWith('custom_') || String(previewPlace.place_id).startsWith('poi_')) ? (
-                    <TextInput style={styles.customNameInput} placeholder="Name this spot" placeholderTextColor="#8e8e93" value={customPlaceName} onChangeText={setCustomPlaceName} autoFocus={String(previewPlace.place_id).startsWith('custom_')} />
-                ) : ( <Text style={styles.previewName} numberOfLines={1}>{previewPlace.name || previewPlace.display_name.split(',')[0]}</Text> )}
-                <View style={styles.previewActionRow}>
-                  <TouchableOpacity style={styles.cancelPreviewButton} onPress={cancelSearch}><Text style={styles.cancelPreviewText}>Cancel</Text></TouchableOpacity>
-                  <TouchableOpacity style={[styles.savePreviewButton, (String(previewPlace.place_id).startsWith('custom_') || String(previewPlace.place_id).startsWith('poi_')) && !customPlaceName.trim() ? { backgroundColor: 'rgba(255,255,255,0.2)' } : {}]} disabled={(String(previewPlace.place_id).startsWith('custom_') || String(previewPlace.place_id).startsWith('poi_')) && !customPlaceName.trim()} onPress={confirmAddPlace}><Text style={styles.savePreviewText}>Save</Text></TouchableOpacity>
+            {(settingsIndex === 0 || settingsTab === 'stats') && (
+              <View style={styles.tabContentArea}>
+                <View style={styles.statsRow}>
+                  <View style={styles.statCard}><Text style={styles.statValue}>{unlockedCities.length}</Text><Text style={styles.statLabel}>Cities Visited</Text></View>
+                  <View style={styles.statCard}><Text style={styles.statValue}>{savedMapPlaces.length}</Text><Text style={styles.statLabel}>Places Saved</Text></View>
                 </View>
-              </BlurView>
-            </KeyboardAvoidingView>
-        )}
+                <View style={styles.statsRow}>
+                  <View style={styles.statCard}><Text style={styles.statValue}>{galleryMemories.length}</Text><Text style={styles.statLabel}>Total Memories</Text></View>
+                  <View style={styles.statCard}><Text style={styles.statValue}>{galleryPhotos.length}</Text><Text style={styles.statLabel}>Photos Taken</Text></View>
+                </View>
+              </View>
+            )}
 
-        {/* --- SETTINGS BURGER MENU --- */}
-        {showSettingsModal && (
-            <BottomSheet
-                ref={settingsSheetRef}
-                index={settingsIndex}
-                snapPoints={['35%', '90%']}
-                enablePanDownToClose={true}
-                backgroundComponent={LiquidGlassBackground}
-                handleIndicatorStyle={styles.handleIndicator}
-                onChange={(index) => {
-                  if (index === -1) setShowSettingsModal(false);
-                  setSettingsIndex(index);
-                  if (index === 0) setSettingsTab('stats');
-                }}
-            >
-              <BottomSheetView style={styles.contentContainer}>
+            {settingsIndex > 0 && settingsTab === 'gallery' && (
+              <View style={styles.edgeToEdgeContainer}>
+                {isLoadingGallery ? (<ActivityIndicator color="#fff" style={{ marginTop: 40 }} />) : (
+                  <FlatList data={galleryPhotos} keyExtractor={item => item.id} numColumns={3} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 40 }} renderItem={({ item, index }) => (<TouchableOpacity style={styles.gridImageContainer} onPress={() => setExpandedGalleryIndex(index)}> <Image source={{ uri: getThumbnailUrl(item.url) }} style={styles.gridImage} resizeMode="cover" /> </TouchableOpacity>)} ListEmptyComponent={<View style={{ padding: 24 }}><Text style={styles.emptyText}>No photos uploaded yet.</Text></View>} />
+                )}
+              </View>
+            )}
+
+            {settingsIndex > 0 && settingsTab === 'memories' && (
+              <View style={styles.tabContentAreaGallery}>
+                {onThisDayPhotos.length > 0 ? (
+                  <View style={styles.onThisDayContainer}>
+                    <Text style={styles.onThisDayTitle}>On This Day</Text>
+                    <FlatList data={onThisDayPhotos} keyExtractor={item => `otd-${item.id}`} showsVerticalScrollIndicator={false} renderItem={({ item }) => {
+                      const yearsAgo = today.getFullYear() - new Date(item.dateVisited).getFullYear();
+                      const mappedPlace = savedMapPlaces.find(p => p.placeId === item.placeId);
+                      return (<TouchableOpacity style={styles.otdCard} onPress={() => setExpandedGalleryIndex(galleryPhotos.findIndex(p => p.id === item.id))}> <Image source={{ uri: getThumbnailUrl(item.url) }} style={styles.otdCardImage} resizeMode="cover" /> <View style={styles.yearsAgoBadgeLarge}><Text style={styles.yearsAgoTextLarge}>{yearsAgo} {yearsAgo === 1 ? 'Year' : 'Years'} Ago</Text></View> <View style={styles.otdCardText}> <Text style={styles.otdPlaceName}>{mappedPlace?.name || 'Unknown Location'}</Text> <Text style={styles.otdDate}>{new Date(item.dateVisited).toLocaleDateString()}</Text> </View> </TouchableOpacity>)
+                    }} />
+                  </View>
+                ) : (<View style={styles.emptyMemoriesContainer}> <FontAwesome name="calendar-times-o" size={40} color="#8e8e93" style={{ marginBottom: 16 }} /> <Text style={styles.emptyText}>No memories on this exact day in previous years.</Text> </View>)}
+              </View>
+            )}
+
+            {settingsIndex > 0 && settingsTab === 'sync' && (
+              <View style={styles.tabContentArea}>
+                <Text style={styles.settingsSubtitle}>Share your code with your partner, or paste theirs below to sync your maps.</Text>
+                <View style={styles.codeBox}><Text style={styles.label}>Your Code (Long press to copy):</Text><Text style={styles.codeText} selectable>{user?.uid}</Text></View>
+                <TextInput style={styles.settingsInput} placeholder="Partner's Connection Code" placeholderTextColor="#8e8e93" value={partnerCodeInput} onChangeText={setPartnerCodeInput} autoCapitalize="none" />
+                <TouchableOpacity style={styles.primarySettingsButton} onPress={handleConnectPartner}><Text style={styles.primaryButtonText}>Connect Accounts</Text></TouchableOpacity>
+                <View style={styles.divider} />
+                <TouchableOpacity style={styles.signOutButtonLarge} onPress={() => signOut(auth)}><Text style={styles.signOutTextLarge}>Log Out</Text></TouchableOpacity>
+              </View>
+            )}
+          </BottomSheetView>
+        </BottomSheet>
+      )}
+
+      {/* --- FULLSCREEN GALLERY OVERLAY --- */}
+      {expandedGalleryIndex !== null && (
+        <View style={styles.fullScreenRootOverlay}>
+          <TouchableOpacity style={styles.closeFullScreenBtnRoot} onPress={() => setExpandedGalleryIndex(null)}>
+            <FontAwesome name="times" size={24} color="#fff" />
+          </TouchableOpacity>
+          <FlatList
+            ref={fullScreenListRef} data={galleryPhotos} keyExtractor={item => item.id} horizontal pagingEnabled showsHorizontalScrollIndicator={false} initialScrollIndex={expandedGalleryIndex} initialNumToRender={1} windowSize={7} maxToRenderPerBatch={2} removeClippedSubviews={Platform.OS === 'android'} getItemLayout={(data, index) => ({ length: SCREEN_WIDTH, offset: SCREEN_WIDTH * index, index })} onScrollToIndexFailed={info => { const wait = new Promise(resolve => setTimeout(resolve, 300)); wait.then(() => fullScreenListRef.current?.scrollToIndex({ index: info.index, animated: false })); }}
+            renderItem={({ item }) => {
+              const mappedPlace = savedMapPlaces.find(p => p.placeId === item.placeId);
+              return <FullScreenImageItem item={item} placeName={mappedPlace?.name || 'Unknown Location'} />
+            }}
+          />
+        </View>
+      )}
+
+      {/* --- CITY MENU --- */}
+      <Modal visible={mapMode === 'city_menu'} transparent animationType="fade">
+        <View style={styles.modalBackdrop}>
+          {/* FIXED: Tapping background closes and unselects city */}
+          <Pressable style={styles.absoluteFill} onPress={() => { setMapMode('default'); setSelectedCity(null); }} />
+          <BlurView intensity={90} tint="dark" style={styles.menuSheet}>
+            <TouchableOpacity style={styles.absoluteCloseButtonSafe} onPress={() => { setMapMode('default'); setSelectedCity(null); }}>
+              <FontAwesome name="times" size={16} color="#ebebf5" />
+            </TouchableOpacity>
+            <Text style={styles.menuTitle}>{selectedCity?.name}</Text>
+            <Text style={styles.menuSubtitle}>What would you like to do?</Text>
+            <TouchableOpacity style={styles.menuPrimaryButton} onPress={() => setMapMode('search_place')}><Text style={styles.menuPrimaryText}>Search and add place</Text></TouchableOpacity>
+            <TouchableOpacity style={styles.menuSecondaryButton} onPress={() => setMapMode('view_places')}><Text style={styles.menuSecondaryText}>View saved places</Text></TouchableOpacity>
+            <TouchableOpacity style={[styles.menuSecondaryButton, { marginTop: 8 }]} onPress={() => selectedCity && handleDeleteCity(selectedCity)}><Text style={[styles.menuSecondaryText, { color: '#ff453a' }]}>Remove city from map</Text></TouchableOpacity>
+          </BlurView>
+        </View>
+      </Modal>
+
+      {/* --- ADD CITY MENU --- */}
+      <Modal visible={showAddCityModal} transparent animationType="slide">
+        <View style={styles.modalBackdrop}>
+          {/* FIXED: Tapping background closes menu */}
+          <Pressable style={styles.absoluteFill} onPress={() => { setShowAddCityModal(false); setCitySearchQuery(''); setCitySearchResults([]); }} />
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ width: '100%', justifyContent: 'flex-end', flex: 1 }} pointerEvents="box-none">
+            <AnimatedBlurView intensity={90} tint="dark" style={[styles.addCitySheet, { transform: [{ translateY: addCitySlideAnim }] }]}>
+              <View style={styles.dragArea} {...addCityPanResponder.panHandlers}>
+                <View style={styles.dragPill} />
                 <View style={styles.sheetHeader}>
-                  <Text style={styles.sheetTitle}>Menu</Text>
-                  <TouchableOpacity onPress={() => settingsSheetRef.current?.close()} style={styles.circularCloseButtonHeader}>
+                  <Text style={styles.sheetTitle}>Select a city</Text>
+                  <TouchableOpacity onPress={() => { setShowAddCityModal(false); setCitySearchQuery(''); setCitySearchResults([]); }} style={styles.circularCloseButtonHeader}>
                     <FontAwesome name="times" size={16} color="#ebebf5" />
                   </TouchableOpacity>
                 </View>
+              </View>
 
-                {settingsIndex > 0 && (
-                    <View style={styles.tabsContainer}>
-                      <TouchableOpacity style={[styles.tabButton, settingsTab === 'gallery' && styles.tabButtonActive]} onPress={() => setSettingsTab('gallery')}><Text style={[styles.tabText, settingsTab === 'gallery' && styles.tabTextActive]}>Gallery</Text></TouchableOpacity>
-                      <TouchableOpacity style={[styles.tabButton, settingsTab === 'memories' && styles.tabButtonActive]} onPress={() => setSettingsTab('memories')}><Text style={[styles.tabText, settingsTab === 'memories' && styles.tabTextActive]}>Memories</Text></TouchableOpacity>
-                      <TouchableOpacity style={[styles.tabButton, settingsTab === 'stats' && styles.tabButtonActive]} onPress={() => setSettingsTab('stats')}><Text style={[styles.tabText, settingsTab === 'stats' && styles.tabTextActive]}>Stats</Text></TouchableOpacity>
-                      <TouchableOpacity style={[styles.tabButton, settingsTab === 'sync' && styles.tabButtonActive]} onPress={() => setSettingsTab('sync')}><Text style={[styles.tabText, settingsTab === 'sync' && styles.tabTextActive]}>Sync</Text></TouchableOpacity>
-                    </View>
-                )}
-
-                {(settingsIndex === 0 || settingsTab === 'stats') && (
-                    <View style={styles.tabContentArea}>
-                      <View style={styles.statsRow}>
-                        <View style={styles.statCard}><Text style={styles.statValue}>{unlockedCities.length}</Text><Text style={styles.statLabel}>Cities Visited</Text></View>
-                        <View style={styles.statCard}><Text style={styles.statValue}>{savedMapPlaces.length}</Text><Text style={styles.statLabel}>Places Saved</Text></View>
-                      </View>
-                      <View style={styles.statsRow}>
-                        <View style={styles.statCard}><Text style={styles.statValue}>{galleryMemories.length}</Text><Text style={styles.statLabel}>Total Memories</Text></View>
-                        <View style={styles.statCard}><Text style={styles.statValue}>{galleryPhotos.length}</Text><Text style={styles.statLabel}>Photos Taken</Text></View>
-                      </View>
-                    </View>
-                )}
-
-                {settingsIndex > 0 && settingsTab === 'gallery' && (
-                    <View style={styles.edgeToEdgeContainer}>
-                      {isLoadingGallery ? ( <ActivityIndicator color="#fff" style={{ marginTop: 40 }} /> ) : (
-                          <FlatList data={galleryPhotos} keyExtractor={item => item.id} numColumns={3} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 40 }} renderItem={({ item, index }) => ( <TouchableOpacity style={styles.gridImageContainer} onPress={() => setExpandedGalleryIndex(index)}> <Image source={{ uri: getThumbnailUrl(item.url) }} style={styles.gridImage} resizeMode="cover" /> </TouchableOpacity> )} ListEmptyComponent={<View style={{ padding: 24 }}><Text style={styles.emptyText}>No photos uploaded yet.</Text></View>} />
-                      )}
-                    </View>
-                )}
-
-                {settingsIndex > 0 && settingsTab === 'memories' && (
-                    <View style={styles.tabContentAreaGallery}>
-                      {onThisDayPhotos.length > 0 ? (
-                          <View style={styles.onThisDayContainer}>
-                            <Text style={styles.onThisDayTitle}>On This Day</Text>
-                            <FlatList data={onThisDayPhotos} keyExtractor={item => `otd-${item.id}`} showsVerticalScrollIndicator={false} renderItem={({ item }) => {
-                              const yearsAgo = today.getFullYear() - new Date(item.dateVisited).getFullYear();
-                              const mappedPlace = savedMapPlaces.find(p => p.placeId === item.placeId);
-                              return ( <TouchableOpacity style={styles.otdCard} onPress={() => setExpandedGalleryIndex(galleryPhotos.findIndex(p => p.id === item.id))}> <Image source={{ uri: getThumbnailUrl(item.url) }} style={styles.otdCardImage} resizeMode="cover" /> <View style={styles.yearsAgoBadgeLarge}><Text style={styles.yearsAgoTextLarge}>{yearsAgo} {yearsAgo === 1 ? 'Year' : 'Years'} Ago</Text></View> <View style={styles.otdCardText}> <Text style={styles.otdPlaceName}>{mappedPlace?.name || 'Unknown Location'}</Text> <Text style={styles.otdDate}>{new Date(item.dateVisited).toLocaleDateString()}</Text> </View> </TouchableOpacity> )
-                            }} />
-                          </View>
-                      ) : ( <View style={styles.emptyMemoriesContainer}> <FontAwesome name="calendar-times-o" size={40} color="#8e8e93" style={{ marginBottom: 16 }} /> <Text style={styles.emptyText}>No memories on this exact day in previous years.</Text> </View> )}
-                    </View>
-                )}
-
-                {settingsIndex > 0 && settingsTab === 'sync' && (
-                    <View style={styles.tabContentArea}>
-                      <Text style={styles.settingsSubtitle}>Share your code with your partner, or paste theirs below to sync your maps.</Text>
-                      <View style={styles.codeBox}><Text style={styles.label}>Your Code (Long press to copy):</Text><Text style={styles.codeText} selectable>{user?.uid}</Text></View>
-                      <TextInput style={styles.settingsInput} placeholder="Partner's Connection Code" placeholderTextColor="#8e8e93" value={partnerCodeInput} onChangeText={setPartnerCodeInput} autoCapitalize="none" />
-                      <TouchableOpacity style={styles.primarySettingsButton} onPress={handleConnectPartner}><Text style={styles.primaryButtonText}>Connect Accounts</Text></TouchableOpacity>
-                      <View style={styles.divider} />
-                      <TouchableOpacity style={styles.signOutButtonLarge} onPress={() => signOut(auth)}><Text style={styles.signOutTextLarge}>Log Out</Text></TouchableOpacity>
-                    </View>
-                )}
-              </BottomSheetView>
-            </BottomSheet>
-        )}
-
-        {/* --- FULLSCREEN GALLERY OVERLAY --- */}
-        {expandedGalleryIndex !== null && (
-            <View style={styles.fullScreenRootOverlay}>
-              <TouchableOpacity style={styles.closeFullScreenBtnRoot} onPress={() => setExpandedGalleryIndex(null)}>
-                <FontAwesome name="times" size={24} color="#fff" />
-              </TouchableOpacity>
+              <View style={styles.citySearchContainer}>
+                <FontAwesome name="search" size={16} color="#8e8e93" style={styles.citySearchIcon} />
+                <TextInput style={styles.citySearchInput} placeholder="Search city..." placeholderTextColor="#8e8e93" value={citySearchQuery} onChangeText={handleCitySearch} autoCorrect={false} autoCapitalize="none" clearButtonMode="while-editing" />
+                {isSearchingCity && <ActivityIndicator size="small" color="#fff" style={{ marginRight: 6 }} />}
+                {citySearchQuery.length > 0 && <TouchableOpacity onPress={() => { setCitySearchQuery(''); setCitySearchResults([]); }} style={styles.clearSearchButton}><FontAwesome name="times-circle" size={16} color="#8e8e93" /></TouchableOpacity>}
+              </View>
               <FlatList
-                  ref={fullScreenListRef} data={galleryPhotos} keyExtractor={item => item.id} horizontal pagingEnabled showsHorizontalScrollIndicator={false} initialScrollIndex={expandedGalleryIndex} initialNumToRender={1} windowSize={7} maxToRenderPerBatch={2} removeClippedSubviews={Platform.OS === 'android'} getItemLayout={(data, index) => ({ length: SCREEN_WIDTH, offset: SCREEN_WIDTH * index, index })} onScrollToIndexFailed={info => { const wait = new Promise(resolve => setTimeout(resolve, 300)); wait.then(() => fullScreenListRef.current?.scrollToIndex({ index: info.index, animated: false })); }}
-                  renderItem={({ item }) => {
-                    const mappedPlace = savedMapPlaces.find(p => p.placeId === item.placeId);
-                    return <FullScreenImageItem item={item} placeName={mappedPlace?.name || 'Unknown Location'} />
-                  }}
+                data={citySearchResults} keyExtractor={(item) => item.id} keyboardShouldPersistTaps="handled"
+                renderItem={({ item }) => (<TouchableOpacity style={styles.cityListItem} onPress={() => handleAddNewCity(item)}><Text style={styles.cityListText}>{item.name}</Text></TouchableOpacity>)}
+                ListEmptyComponent={<View style={styles.emptyListContainer}> {isSearchingCity ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.emptyListText}>{citySearchQuery.length < 2 ? "Type a city name to search globally" : "No cities found"}</Text>} </View>}
               />
-            </View>
-        )}
+            </AnimatedBlurView>
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
 
-        {/* --- CITY MENU --- */}
-        <Modal visible={mapMode === 'city_menu'} transparent animationType="fade">
-          <View style={styles.modalBackdrop}>
-            {/* FIXED: Tapping background closes and unselects city */}
-            <Pressable style={styles.absoluteFill} onPress={() => { setMapMode('default'); setSelectedCity(null); }} />
-            <BlurView intensity={90} tint="dark" style={styles.menuSheet}>
-              <TouchableOpacity style={styles.absoluteCloseButtonSafe} onPress={() => { setMapMode('default'); setSelectedCity(null); }}>
-                <FontAwesome name="times" size={16} color="#ebebf5" />
-              </TouchableOpacity>
-              <Text style={styles.menuTitle}>{selectedCity?.name}</Text>
-              <Text style={styles.menuSubtitle}>What would you like to do?</Text>
-              <TouchableOpacity style={styles.menuPrimaryButton} onPress={() => setMapMode('search_place')}><Text style={styles.menuPrimaryText}>Search and add place</Text></TouchableOpacity>
-              <TouchableOpacity style={styles.menuSecondaryButton} onPress={() => setMapMode('view_places')}><Text style={styles.menuSecondaryText}>View saved places</Text></TouchableOpacity>
-              <TouchableOpacity style={[styles.menuSecondaryButton, { marginTop: 8 }]} onPress={() => selectedCity && handleDeleteCity(selectedCity)}><Text style={[styles.menuSecondaryText, { color: '#ff453a' }]}>Remove city from map</Text></TouchableOpacity>
-            </BlurView>
-          </View>
-        </Modal>
-
-        {/* --- ADD CITY MENU --- */}
-        <Modal visible={showAddCityModal} transparent animationType="slide">
-          <View style={styles.modalBackdrop}>
-            {/* FIXED: Tapping background closes menu */}
-            <Pressable style={styles.absoluteFill} onPress={() => { setShowAddCityModal(false); setCitySearchQuery(''); setCitySearchResults([]); }} />
-            <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{width: '100%', justifyContent: 'flex-end', flex: 1}} pointerEvents="box-none">
-              <AnimatedBlurView intensity={90} tint="dark" style={[styles.addCitySheet, { transform: [{ translateY: addCitySlideAnim }] }]}>
-                <View style={styles.dragArea} {...addCityPanResponder.panHandlers}>
-                  <View style={styles.dragPill} />
-                  <View style={styles.sheetHeader}>
-                    <Text style={styles.sheetTitle}>Select a city</Text>
-                    <TouchableOpacity onPress={() => { setShowAddCityModal(false); setCitySearchQuery(''); setCitySearchResults([]); }} style={styles.circularCloseButtonHeader}>
-                      <FontAwesome name="times" size={16} color="#ebebf5" />
-                    </TouchableOpacity>
-                  </View>
-                </View>
-
-                <View style={styles.citySearchContainer}>
-                  <FontAwesome name="search" size={16} color="#8e8e93" style={styles.citySearchIcon} />
-                  <TextInput style={styles.citySearchInput} placeholder="Search city..." placeholderTextColor="#8e8e93" value={citySearchQuery} onChangeText={handleCitySearch} autoCorrect={false} autoCapitalize="none" clearButtonMode="while-editing" />
-                  {isSearchingCity && <ActivityIndicator size="small" color="#fff" style={{ marginRight: 6 }} />}
-                  {citySearchQuery.length > 0 && <TouchableOpacity onPress={() => { setCitySearchQuery(''); setCitySearchResults([]); }} style={styles.clearSearchButton}><FontAwesome name="times-circle" size={16} color="#8e8e93" /></TouchableOpacity>}
-                </View>
-                <FlatList
-                    data={citySearchResults} keyExtractor={(item) => item.id} keyboardShouldPersistTaps="handled"
-                    renderItem={({ item }) => ( <TouchableOpacity style={styles.cityListItem} onPress={() => handleAddNewCity(item)}><Text style={styles.cityListText}>{item.name}</Text></TouchableOpacity> )}
-                    ListEmptyComponent={ <View style={styles.emptyListContainer}> {isSearchingCity ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.emptyListText}>{citySearchQuery.length < 2 ? "Type a city name to search globally" : "No cities found"}</Text>} </View> }
-                />
-              </AnimatedBlurView>
-            </KeyboardAvoidingView>
-          </View>
-        </Modal>
-
-        {/* --- VIEW PLACES (CityDetailSheet) --- */}
-        <Modal visible={mapMode === 'view_places'} transparent animationType="slide">
-          <View style={styles.modalBackdrop}>
-            {/* FIXED: Tapping background correctly unselects city */}
-            <Pressable style={styles.absoluteFill} onPress={() => { setMapMode('default'); setSelectedCity(null); }} />
-            {selectedCity && <CityDetailSheet cityId={selectedCity.id} cityName={selectedCity.name} coupleId={myCoupleId} onClose={() => { setMapMode('default'); setSelectedCity(null); loadGallery(myCoupleId); }} onPlacesUpdated={() => loadCitiesAndPlaces(myCoupleId)} />}
-          </View>
-        </Modal>
-      </GestureHandlerRootView>
+      {/* --- VIEW PLACES (CityDetailSheet) --- */}
+      <Modal visible={mapMode === 'view_places'} transparent animationType="slide">
+        <View style={styles.modalBackdrop}>
+          {/* FIXED: Tapping background correctly unselects city */}
+          <Pressable style={styles.absoluteFill} onPress={() => { setMapMode('default'); setSelectedCity(null); }} />
+          {selectedCity && <CityDetailSheet cityId={selectedCity.id} cityName={selectedCity.name} coupleId={myCoupleId} onClose={() => { setMapMode('default'); setSelectedCity(null); loadGallery(myCoupleId); }} onPlacesUpdated={() => loadCitiesAndPlaces(myCoupleId)} />}
+        </View>
+      </Modal>
+    </GestureHandlerRootView>
   );
 }
 
