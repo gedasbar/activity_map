@@ -50,3 +50,22 @@ personal data and photos, so don't put it in a public place.
 
 There is no restore script yet. The JSON files contain every document with its id, so a restore script can be
 written if needed. Photos stay on Cloudinary regardless; the download is a second copy.
+
+## Migration (`migrate.mjs`)
+
+Prepares the database for the strict security rules. Run it only as part of the steps in
+[docs/SECURITY_ROLLOUT.md](../docs/SECURITY_ROLLOUT.md).
+
+```bash
+npm run migrate          # dry run: prints the plan, writes nothing
+npm run migrate:apply    # does it
+```
+
+It does two things: creates the missing `couples/{coupleId}` document for each couple (members = the users whose
+profile points at it), and fills in a missing `uid` / `email` on user profiles from the sign-in account. It never
+moves, rewrites or deletes cities, places, memories or photos, never overwrites a field that already has a value,
+saves the previous state to `backups/migration-<time>/before.json` before writing, verifies after writing, and does
+nothing if run twice. It stops (and writes nothing) if a couple would have more than two members or if some data
+belongs to no couple (`--allow-orphans` overrides the second).
+
+It uses the same `serviceAccountKey.json` as the backup. Tests for it are in `firestore-tests/`.

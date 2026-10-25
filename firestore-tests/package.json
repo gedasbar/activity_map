@@ -1,0 +1,16 @@
+{
+  "name": "activity-map-firestore-tests",
+  "private": true,
+  "type": "module",
+  "description": "Security-rules and migration tests. They run against the local Firebase emulators, never against the real project.",
+  "scripts": {
+    "test": "firebase emulators:exec --config ../firebase.json --only firestore,auth --project demo-activity-map \"node --import ./support/register.mjs --test --test-concurrency=1\"",
+    "mutation-check": "node mutation-check.mjs"
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^5.0.0",
+    "firebase": "^12.18.0",
+    "firebase-admin": "^14.5.0",
+    "firebase-tools": "^14.0.0"
+  }
+}

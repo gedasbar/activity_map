@@ -30,6 +30,11 @@ Done when: you can search, add a city, add a place and save a memory on a phone.
 
 ## Phase 1: Security foundations
 
+> **Status (2026-10-25):** 1.1 (couples and invites) and 1.2 (strict rules, with 100 emulator tests) are built and merged
+> or in review; 1.6 (migration) is a safe prepare-only script (see [SECURITY_ROLLOUT.md](SECURITY_ROLLOUT.md)). The couple
+> ids were deliberately **not** re-keyed: with membership-based rules they no longer need to be secret. Still open:
+> 1.3 (App Check, key restriction, email verification), 1.4 (photos), 1.5 (secrets).
+
 ### 1.1 Real couple model (replaces "coupleId = someone's uid")
 
 Today anyone who learns a uid can read or write that couple's data, and nothing validates links.

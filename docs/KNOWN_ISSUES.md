@@ -3,6 +3,13 @@
 Written from a read-only review (no code was changed, and the app was not run on a device).
 Items are marked **verified** (I ran something to confirm) or **hypothesis**.
 
+## Status update (2026-10-25)
+
+Fixed since this was written: city and place search (resilient, with a fallback), the gallery and menu sheet crashes and
+scrolling, account linking (invite codes instead of pasting a uid), and the open database rules (strict rules written
+and tested; **they take effect only when you publish them**, see [SECURITY_ROLLOUT.md](SECURITY_ROLLOUT.md)). The notes
+below are kept for history.
+
 ## Reported symptom: "can't search for locations, it gives me an error"
 
 The exact error text hasn't been captured yet, so the cause is not confirmed. What was checked:

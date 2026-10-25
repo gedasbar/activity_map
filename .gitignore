@@ -46,3 +46,6 @@ example
 backups/
 serviceAccountKey*.json
 *-firebase-adminsdk-*.json
+
+# Firebase emulator logs
+*-debug.log

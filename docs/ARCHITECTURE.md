@@ -91,9 +91,9 @@ Data is shared through a `couples/{coupleId}` document (`members`: up to two uid
 - The old "paste your partner's uid" flow and "Skip for now" are gone: typing someone's uid silently moved you to
   their data (or to an empty space) and could not be validated.
 
-Not enforced yet: the Firestore rules are still "any signed-in user". The batch above is shaped so that rules can
-enforce it (invite valid, unused, unexpired, at most two members). That is the next step; see
-[ROADMAP.md](ROADMAP.md).
+Enforced by `firestore.rules` (once published; see [SECURITY_ROLLOUT.md](SECURITY_ROLLOUT.md)): only members read or
+change a couple's data, a couple has at most two members, and the join batch is accepted only with a valid, unused,
+unexpired invite that the same batch marks used. The rules are tested in `firestore-tests/`.
 
 ## Auth setup (`firebaseConfig.ts`)
 
