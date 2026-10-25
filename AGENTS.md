@@ -40,7 +40,8 @@ target is not a supported way to run this app.
 | `src/config/firebaseConfig.ts` | Firebase init; exports `auth`, `db`, `storage` |
 | `src/models/types.ts` | `UserProfile` and `VisitedLog` types |
 | `firestore.rules` | Security rules (not tracked in git yet; must be deployed by hand) |
-| `docs/` | Architecture, data model, known issues |
+| `docs/` | Architecture, data model, known issues, roadmap |
+| `scripts/` | Node maintenance scripts (read-only backup). Own `package.json`; needs a service account key that must never be committed or shared |
 
 Imports use relative paths. `tsconfig.json` defines an `@/*` alias, but a commit ("use relative imports ... to
 resolve module alias error") moved off it. Keep using relative imports.

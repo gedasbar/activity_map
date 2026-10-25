@@ -56,3 +56,15 @@ a memory is removed (the app can't do that with an unsigned preset).
 `firestore.rules` currently allows any signed-in user to read and write all four collections. Nothing
 limits a user to their own `coupleId`. It is **not deployed by the repo**: there is no `firebase.json`, so the
 live rules are whatever is set in the Firebase console.
+
+## What the live database looked like (checked 2026-10-25 in the Firebase console)
+
+- Both partners' `users` documents carry the **same `coupleId`**, and that value is the *first* partner's Firebase
+  uid (not the second partner's).
+- The first partner's `users` document has only `coupleId` (no `uid` or `email`): it was created by
+  `linkCoupleAccounts` (merge) because the account predates `createUserDocument`. Code must not assume
+  `users/{uid}.email` exists.
+- `unlocked_cities` rows have `cityId` as a slug (for example `"plunge"`), not the `osm_<place_id>` form that city search
+  produces today, so ids come in at least two formats.
+- Almost all places were added by the partner whose sign-in currently fails; the data is stored under the other
+  partner's uid, so it is not tied to the broken account.
