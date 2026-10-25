@@ -1,11 +1,12 @@
 import { FontAwesome } from '@expo/vector-icons';
 import BottomSheet, {
-  BottomSheetBackgroundProps, BottomSheetFlatList, BottomSheetScrollView, BottomSheetTextInput
+  BottomSheetBackgroundProps, BottomSheetFlatList, BottomSheetScrollView
 } from '@gorhom/bottom-sheet';
 import { BlurView } from 'expo-blur';
-import React, { useRef, useState } from 'react';
-import { ActivityIndicator, Dimensions, Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Dimensions, Image, Share, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import Reanimated, { Extrapolation, interpolate, useAnimatedStyle } from 'react-native-reanimated';
+import type { CoupleMember } from '../models/types';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const ReanimatedBlurView = Reanimated.createAnimatedComponent(BlurView);
@@ -35,7 +36,8 @@ interface Props {
   uid?: string;
   getThumbnailUrl: (url: string) => string;
   onOpenPhoto: (photoId: string) => void;
-  onConnectPartner: (code: string) => void;
+  onCreateInvite: () => Promise<{ displayCode: string; expiresAt: number }>;
+  onLoadMembers: () => Promise<CoupleMember[]>;
   onSignOut: () => void;
   onClose: () => void;
   initialIndex?: 0 | 1;
@@ -59,12 +61,15 @@ const LiquidGlassBackground: React.FC<BottomSheetBackgroundProps> = ({ style, an
 // Scrollable content must use the BottomSheet* scrollables so scrolling and the sheet's drag gesture cooperate.
 export default function MenuSheet({
   stats, photos, onThisDayPhotos, placeNameFor, isLoadingGallery, uid, getThumbnailUrl,
-  onOpenPhoto, onConnectPartner, onSignOut, onClose, initialIndex = 0,
+  onOpenPhoto, onCreateInvite, onLoadMembers, onSignOut, onClose, initialIndex = 0,
 }: Props) {
   const sheetRef = useRef<BottomSheet>(null);
   const [expanded, setExpanded] = useState(initialIndex > 0);
   const [tab, setTab] = useState<Tab>('stats');
-  const [partnerCode, setPartnerCode] = useState('');
+  const [members, setMembers] = useState<CoupleMember[] | null>(null);
+  const [invite, setInvite] = useState<{ displayCode: string; expiresAt: number } | null>(null);
+  const [creatingInvite, setCreatingInvite] = useState(false);
+  const [inviteError, setInviteError] = useState<string | null>(null);
 
   // Do NOT feed this back into BottomSheet's `index` prop: it is reactive and would re-snap the sheet mid-animation.
   const handleTarget = (index: number) => {
@@ -73,8 +78,34 @@ export default function MenuSheet({
     if (index === 0) setTab('stats');
   };
 
-  const today = new Date();
   const activeTab = expanded ? tab : 'stats';
+  const today = new Date();
+
+  // Load the couple's members each time the Sync tab is shown.
+  useEffect(() => {
+    if (activeTab !== 'sync') return;
+    let cancelled = false;
+    onLoadMembers().then((m) => { if (!cancelled) setMembers(m); }, () => { if (!cancelled) setMembers([]); });
+    return () => { cancelled = true; };
+  }, [activeTab]);
+
+  const handleCreateInvite = async () => {
+    setCreatingInvite(true);
+    setInviteError(null);
+    try {
+      setInvite(await onCreateInvite());
+    } catch (e: any) {
+      setInviteError(e?.message || 'Could not create an invite. Please try again.');
+    } finally {
+      setCreatingInvite(false);
+    }
+  };
+
+  const shareInvite = () => {
+    if (!invite) return;
+    Share.share({ message: `Join me on Activity Map with this invite code: ${invite.displayCode}
+(It works once and expires in 24 hours.)` });
+  };
 
   const renderPhoto = ({ item }: { item: GalleryPhoto }) => (
     <TouchableOpacity style={styles.gridImageContainer} onPress={() => onOpenPhoto(item.id)}>
@@ -175,23 +206,34 @@ export default function MenuSheet({
         )}
 
         {activeTab === 'sync' && (
-          <BottomSheetScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.listBottomPadding}>
-            <Text style={styles.settingsSubtitle}>Share your code with your partner, or paste theirs below to sync your maps.</Text>
+          <BottomSheetScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.listBottomPadding}>
+            <Text style={styles.label}>Your couple</Text>
             <View style={styles.codeBox}>
-              <Text style={styles.label}>Your Code (Long press to copy):</Text>
-              <Text style={styles.codeText} selectable>{uid}</Text>
+              {members === null ? <ActivityIndicator color="#fff" /> : members.map((m) => (
+                <Text key={m.uid} style={styles.memberText}>{m.email ?? 'Account without e-mail'}{m.isMe ? ' (you)' : ''}</Text>
+              ))}
             </View>
-            <BottomSheetTextInput
-              style={styles.settingsInput}
-              placeholder="Partner's Connection Code"
-              placeholderTextColor="#8e8e93"
-              value={partnerCode}
-              onChangeText={setPartnerCode}
-              autoCapitalize="none"
-            />
-            <TouchableOpacity style={styles.primarySettingsButton} onPress={() => { onConnectPartner(partnerCode); setPartnerCode(''); }}>
-              <Text style={styles.primaryButtonText}>Connect Accounts</Text>
-            </TouchableOpacity>
+
+            {members !== null && members.length < 2 && (
+              <View>
+                <Text style={styles.settingsSubtitle}>Your partner is not connected yet. Create an invite code and send it to them. It works once and expires after 24 hours.</Text>
+                {invite && (
+                  <View style={styles.codeBox}>
+                    <Text style={styles.label}>Invite code (long press to copy)</Text>
+                    <Text style={styles.inviteCode} selectable>{invite.displayCode}</Text>
+                    <Text style={styles.inviteExpiry}>Valid until {new Date(invite.expiresAt).toLocaleString()}</Text>
+                    <TouchableOpacity style={styles.shareButton} onPress={shareInvite}>
+                      <Text style={styles.primaryButtonText}>Share code</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+                {!!inviteError && <Text style={styles.errorText}>{inviteError}</Text>}
+                <TouchableOpacity style={[styles.primarySettingsButton, creatingInvite && styles.buttonDisabled]} onPress={handleCreateInvite} disabled={creatingInvite}>
+                  {creatingInvite ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>{invite ? 'Create a new code' : 'Create invite code'}</Text>}
+                </TouchableOpacity>
+              </View>
+            )}
+
             <View style={styles.divider} />
             <TouchableOpacity style={styles.signOutButtonLarge} onPress={onSignOut}>
               <Text style={styles.signOutTextLarge}>Log Out</Text>
@@ -246,7 +288,12 @@ const styles = StyleSheet.create({
   codeBox: { backgroundColor: 'rgba(255,255,255,0.1)', padding: 16, borderRadius: 14, marginBottom: 20 },
   label: { fontSize: 12, color: '#ebebf5', opacity: 0.6, marginBottom: 6, fontWeight: '600', textTransform: 'uppercase' },
   codeText: { fontSize: 16, fontWeight: 'bold', color: '#fff' },
-  settingsInput: { backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 14, padding: 16, fontSize: 16, marginBottom: 16, color: '#fff' },
+  memberText: { fontSize: 16, color: '#fff', paddingVertical: 4 },
+  inviteCode: { fontSize: 28, fontWeight: 'bold', color: '#fff', letterSpacing: 2, marginBottom: 6 },
+  inviteExpiry: { fontSize: 13, color: '#ebebf5', opacity: 0.6, marginBottom: 14 },
+  shareButton: { backgroundColor: '#0a84ff', padding: 14, borderRadius: 12, alignItems: 'center' },
+  errorText: { color: '#ff9f0a', fontSize: 14, marginBottom: 12 },
+  buttonDisabled: { opacity: 0.6 },
   primarySettingsButton: { backgroundColor: '#0a84ff', padding: 16, borderRadius: 14, alignItems: 'center' },
   primaryButtonText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
   divider: { height: StyleSheet.hairlineWidth, backgroundColor: 'rgba(255,255,255,0.2)', marginVertical: 24 },

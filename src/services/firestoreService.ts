@@ -1,6 +1,8 @@
-import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, query, setDoc, updateDoc,where } from 'firebase/firestore';
+import * as Crypto from 'expo-crypto';
+import { addDoc, arrayUnion, collection, deleteDoc, doc, getDoc, getDocs, query, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
 import { db } from '../config/firebaseConfig';
-import { UserProfile, VisitedLog } from '../models/types';
+import type { Couple, CoupleMember, Invite, UserProfile, VisitedLog } from '../models/types';
+import { formatInviteCode, generateInviteCode, INVITE_CODE_LENGTH, normalizeInviteCode } from './inviteCode';
 
 // 1. Creates a database entry for a new user
 export const createUserDocument = async (uid: string, email: string) => {
@@ -28,14 +30,93 @@ export const getUserProfile = async (uid: string): Promise<UserProfile | null> =
   return null;
 };
 
-export const linkCoupleAccounts = async (myUid: string, sharedCode: string) => {
-  const myUserRef = doc(db, 'users', myUid);
-  
-  // setDoc with merge: true will safely update the field if the document exists, 
-  // or create the document from scratch if it is missing.
-  await setDoc(myUserRef, {
-    coupleId: sharedCode
-  }, { merge: true });
+// --- COUPLES AND INVITES ---
+// A couple is a couples/{coupleId} document listing its members. Every other document carries that coupleId.
+// Older couples use a user's uid as the id and have no couples document until ensureCouple creates one.
+
+export const INVITE_TTL_MS = 24 * 60 * 60 * 1000;
+
+export class InviteError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InviteError';
+  }
+}
+
+// Creates the couples document for an older couple (id = a uid) if it does not exist yet.
+export const ensureCouple = async (uid: string, coupleId: string) => {
+  const coupleRef = doc(db, 'couples', coupleId);
+  if ((await getDoc(coupleRef)).exists()) return;
+
+  const membersSnap = await getDocs(query(collection(db, 'users'), where('coupleId', '==', coupleId)));
+  const members = Array.from(new Set([uid, ...membersSnap.docs.map(d => d.id)]));
+  const couple: Couple = { members, createdAt: Date.now(), createdBy: uid };
+  await setDoc(coupleRef, couple);
+};
+
+// Starts a new couple with only this user in it. They can invite their partner later.
+export const createSoloCouple = async (uid: string, email: string): Promise<string> => {
+  const coupleRef = doc(collection(db, 'couples'));
+  const couple: Couple = { members: [uid], createdAt: Date.now(), createdBy: uid };
+  const batch = writeBatch(db);
+  batch.set(coupleRef, couple);
+  batch.set(doc(db, 'users', uid), { uid, email, coupleId: coupleRef.id }, { merge: true });
+  await batch.commit();
+  return coupleRef.id;
+};
+
+// Creates a single-use invite for the couple. The partner types the code in LinkAccountScreen.
+export const createInvite = async (uid: string, coupleId: string): Promise<{ code: string; displayCode: string; expiresAt: number }> => {
+  await ensureCouple(uid, coupleId);
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const code = await generateInviteCode(Crypto.getRandomBytesAsync);
+    const inviteRef = doc(db, 'invites', code);
+    if ((await getDoc(inviteRef)).exists()) continue;
+
+    const now = Date.now();
+    const invite: Invite = { coupleId, createdBy: uid, createdAt: now, expiresAt: now + INVITE_TTL_MS, used: false };
+    await setDoc(inviteRef, invite);
+    return { code, displayCode: formatInviteCode(code), expiresAt: invite.expiresAt };
+  }
+  throw new Error('Could not create an invite. Please try again.');
+};
+
+// Redeems an invite: adds the user to the couple, marks the invite used and points the user's profile at the
+// couple. One atomic batch, so a failure leaves nothing half-done. Returns the coupleId.
+export const joinWithInvite = async (uid: string, email: string, rawCode: string): Promise<string> => {
+  const code = normalizeInviteCode(rawCode);
+  if (code.length !== INVITE_CODE_LENGTH) throw new InviteError('That code does not look right. It has 10 letters and numbers.');
+
+  const inviteRef = doc(db, 'invites', code);
+  const inviteSnap = await getDoc(inviteRef);
+  if (!inviteSnap.exists()) throw new InviteError('Invalid code. Check it and try again.');
+
+  const invite = inviteSnap.data() as Invite;
+  if (invite.used) throw new InviteError('This code has already been used. Ask your partner for a new one.');
+  if (invite.expiresAt < Date.now()) throw new InviteError('This code has expired. Ask your partner for a new one.');
+  if (invite.createdBy === uid) throw new InviteError('You created this code. Send it to your partner instead.');
+
+  const now = Date.now();
+  const batch = writeBatch(db);
+  batch.update(doc(db, 'couples', invite.coupleId), { members: arrayUnion(uid), joinCode: code });
+  batch.update(inviteRef, { used: true, usedBy: uid, usedAt: now });
+  batch.set(doc(db, 'users', uid), { uid, email, coupleId: invite.coupleId }, { merge: true });
+  await batch.commit();
+  return invite.coupleId;
+};
+
+// Members of the couple with their e-mail addresses (older profiles may not have one).
+export const getCoupleMembers = async (uid: string, coupleId: string): Promise<CoupleMember[]> => {
+  const coupleSnap = await getDoc(doc(db, 'couples', coupleId));
+  const memberIds: string[] = coupleSnap.exists()
+    ? (coupleSnap.data() as Couple).members
+    : (await getDocs(query(collection(db, 'users'), where('coupleId', '==', coupleId)))).docs.map(d => d.id);
+
+  return Promise.all(Array.from(new Set([uid, ...memberIds])).map(async (memberId) => {
+    const profile = await getUserProfile(memberId);
+    return { uid: memberId, email: profile?.email ?? null, isMe: memberId === uid };
+  }));
 };
 
 // 4. Save a new memory log to the database

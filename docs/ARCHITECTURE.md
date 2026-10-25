@@ -73,16 +73,27 @@ Props: `cityId, cityName, coupleId, onClose, onPlacesUpdated`.
 - Notes are only saved with a photo when exactly one photo is selected. With several photos the note is dropped.
 - Upload: `fetch` POST of `FormData` to Cloudinary; the returned `secure_url` is stored in `photoUrls`.
 
-## Account linking ("couple" model)
+## Couples and invites
 
-There is no invitation flow. Each user has a `users/{uid}` document with a `coupleId`.
+Data is shared through a `couples/{coupleId}` document (`members`: up to two uids). Every data document has the
+`coupleId`. See [DATA_MODEL.md](DATA_MODEL.md).
 
-- "Skip for now" sets your `coupleId` to your own uid.
-- Entering a partner's code sets your `coupleId` to the code you typed. The intended code is the partner's uid.
-- For two people to share data, both must have the same `coupleId`. If A skips (coupleId = A's uid) and B
-  enters A's uid, they match. If A enters B's uid and B enters A's uid, they do **not** match.
-  Each would be reading data stored under the other's id.
-  The app never checks this or the validity of the code.
+- **New user, no couple:** `LinkAccountScreen` offers "Join with code" or "Start on my own". Starting alone creates
+  a couple with one member (`createSoloCouple`).
+- **Inviting a partner:** Menu → Sync tab → "Create invite code". `createInvite` makes a random 10-character code
+  (about 50 bits, no look-alike characters, shown as `XXXXX-XXXXX`), stored as `invites/{code}` with a 24-hour
+  expiry. Share it however you like.
+- **Joining:** `joinWithInvite` validates the invite (exists, unused, not expired, not your own) and then writes one
+  atomic batch: add the user to `couples/{id}.members` (and set `joinCode`), mark the invite used, and set the
+  user's `coupleId`. A failed join writes nothing.
+- **Older couples** (the `coupleId` is a user's uid) have no `couples` document. `ensureCouple` creates one, with
+  every user whose profile points at that id as a member, the first time someone creates an invite.
+- The old "paste your partner's uid" flow and "Skip for now" are gone: typing someone's uid silently moved you to
+  their data (or to an empty space) and could not be validated.
+
+Not enforced yet: the Firestore rules are still "any signed-in user". The batch above is shaped so that rules can
+enforce it (invite valid, unused, unexpired, at most two members). That is the next step; see
+[ROADMAP.md](ROADMAP.md).
 
 ## Auth setup (`firebaseConfig.ts`)
 
