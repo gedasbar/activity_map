@@ -1,6 +1,7 @@
 # Data model (Firestore)
 
-Four top-level collections. All except `users` carry a `coupleId` string and are always queried by it.
+Six top-level collections: `users`, `couples`, `invites`, and three data collections (`unlocked_cities`, `saved_places`,
+`visited_logs`) that each carry a `coupleId` string and are always queried by it.
 There are no subcollections and no composite indexes (queries are equality-only; sorting happens in JS).
 
 ## `users/{uid}`
@@ -9,7 +10,7 @@ There are no subcollections and no composite indexes (queries are equality-only;
 | --- | --- | --- |
 | `uid` | string | Same as the document id |
 | `email` | string | |
-| `coupleId` | string or null | Null until linked. Equals a partner's uid (or your own if you skipped) |
+| `coupleId` | string or null | Null until the user joins or starts a couple. Refers to `couples/{coupleId}` |
 
 Created in `LoginScreen.handleSignUp` via `createUserDocument`. `linkCoupleAccounts` uses `setDoc(..., { merge: true })`,
 so it also creates the document if it is missing.
@@ -44,6 +45,21 @@ with the same `coupleId` and `cityId`.
 | `createdBy` | uid of the author |
 
 The TypeScript `VisitedLog` type does not list `placeId`, but the data has it.
+
+## `couples/{coupleId}`: who shares a map
+
+| Field | Notes |
+| --- | --- |
+| `members` | Array of uids, at most two |
+| `createdAt`, `createdBy` | ms, uid |
+| `joinCode` | Set when someone joins. Lets security rules find the invite being redeemed |
+
+The id is a random Firestore id for new couples, or a user's uid for older ones (created lazily by `ensureCouple`).
+
+## `invites/{code}`: single-use partner invite
+
+`coupleId`, `createdBy`, `createdAt`, `expiresAt` (24 hours later), `used`, and once redeemed `usedBy`, `usedAt`.
+The document id is the 10-character code (alphabet `ABCDEFGHJKMNPQRSTUVWXYZ23456789`).
 
 ## Cloudinary
 

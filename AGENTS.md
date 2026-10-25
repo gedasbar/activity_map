@@ -35,7 +35,9 @@ target is not a supported way to run this app.
 | `src/app/index.tsx` | The whole app screen (about 730 lines): auth gate, map, add-city modal, place search, settings sheet, gallery |
 | `src/components/CityDetailSheet.tsx` | Per-city sheet: saved places, ratings, per-place memories, photo upload, date editing |
 | `src/components/LoginScreen.tsx` | Email and password sign in or sign up |
-| `src/components/LinkAccountScreen.tsx` | Enter a partner code, or "skip" to link to yourself |
+| `src/components/LinkAccountScreen.tsx` | Join a couple with an invite code, or start on your own |
+| `src/components/MenuSheet.tsx` | The burger-menu bottom sheet: stats, gallery, memories, and Sync (couple members, create invite code) |
+| `src/services/inviteCode.ts` | Invite code generation and formatting (pure functions) |
 | `src/services/firestoreService.ts` | Every Firestore read and write; the only file that talks to the database |
 | `src/config/firebaseConfig.ts` | Firebase init; exports `auth`, `db`, `storage` |
 | `src/models/types.ts` | `UserProfile` and `VisitedLog` types |
@@ -49,9 +51,12 @@ resolve module alias error") moved off it. Keep using relative imports.
 ## How it works in one paragraph
 
 On launch `index.tsx` listens to `onAuthStateChanged`. No user shows `LoginScreen`. A user whose profile has
-no `coupleId` sees `LinkAccountScreen`. Otherwise the map loads. The `coupleId` is the partner's Firebase uid
-(or your own uid if you skipped). Every document in every collection carries a `coupleId`, and every query
-filters on it, so that string is the only thing that "shares" data between two accounts. Details are in
+no `coupleId` sees `LinkAccountScreen`, where they join with a partner's invite code or start on their own.
+Otherwise the map loads. A couple is a `couples/{coupleId}` document listing its members (at most two); every
+other document carries that `coupleId` and every query filters on it, so that string is what shares data between
+two accounts. Older couples use a user's uid as the `coupleId`; `ensureCouple` creates their `couples` document
+on first use. Partners are connected only through single-use invites (`invites/{code}`, 24 hours), created in
+the menu's Sync tab. There is no way to type another user's uid any more. Details are in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/DATA_MODEL.md](docs/DATA_MODEL.md).
 
 ## Conventions and gotchas

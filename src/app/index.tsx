@@ -22,8 +22,8 @@ import MenuSheet from '../components/MenuSheet';
 import LoginScreen from '../components/LoginScreen';
 import { auth } from '../config/firebaseConfig';
 import {
-  deleteUnlockedCity, getAllCoupleMemories, getAllSavedPlaces,
-  getUnlockedCities, getUserProfile, linkCoupleAccounts, savePlace, unlockCity
+  createInvite, deleteUnlockedCity, getAllCoupleMemories, getAllSavedPlaces, getCoupleMembers,
+  getUnlockedCities, getUserProfile, savePlace, unlockCity
 } from '../services/firestoreService';
 import { isAbortError, searchCities, searchPlaces } from '../services/geocoding';
 
@@ -318,16 +318,16 @@ export default function App() {
     if (mapMode === 'city_menu') { setMapMode('default'); setSelectedCity(null); }
   };
 
-  const handleConnectPartner = async (code: string) => {
-    const partnerCode = code.trim();
-    if (!partnerCode || !user) return;
-    try {
-      Keyboard.dismiss(); await linkCoupleAccounts(user.uid, partnerCode);
-      setMyCoupleId(partnerCode); await loadCitiesAndPlaces(partnerCode); await loadGallery(partnerCode);
-      Alert.alert("Success!", "Accounts connected. Your maps are now synced.");
-      setShowSettingsModal(false);
-    } catch (error: any) { Alert.alert("Error", error.message); }
+  // Called by LinkAccountScreen once the user has joined (or started) a couple.
+  const handleLinked = async (coupleId: string) => {
+    setMyCoupleId(coupleId);
+    await loadCitiesAndPlaces(coupleId);
+    await loadGallery(coupleId);
+    setHasLinkedAccount(true);
   };
+
+  const handleCreateInvite = () => createInvite(user!.uid, myCoupleId);
+  const handleLoadMembers = () => getCoupleMembers(user!.uid, myCoupleId);
 
   const galleryPhotos = galleryMemories.flatMap(mem => (mem.photoUrls || []).map((url: string, index: number) => ({ id: `${mem.id}-${index}`, url: url, dateVisited: mem.dateVisited, placeId: mem.placeId, notes: mem.notes })));
   const today = new Date();
@@ -338,7 +338,7 @@ export default function App() {
 
   if (loading) return <View style={styles.centered}><ActivityIndicator size="large" color="#fff" /></View>;
   if (!user) return <LoginScreen />;
-  if (!hasLinkedAccount) return <LinkAccountScreen onLinked={() => setHasLinkedAccount(true)} />;
+  if (!hasLinkedAccount) return <LinkAccountScreen onLinked={handleLinked} />;
 
   return (
     <GestureHandlerRootView style={styles.container}>
@@ -419,7 +419,8 @@ export default function App() {
           uid={user?.uid}
           getThumbnailUrl={getThumbnailUrl}
           onOpenPhoto={(photoId) => setExpandedGalleryIndex(galleryPhotos.findIndex(p => p.id === photoId))}
-          onConnectPartner={handleConnectPartner}
+          onCreateInvite={handleCreateInvite}
+          onLoadMembers={handleLoadMembers}
           onSignOut={() => signOut(auth)}
           onClose={() => setShowSettingsModal(false)}
         />
