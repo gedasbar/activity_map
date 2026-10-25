@@ -14,19 +14,18 @@ import {
 } from 'react-native';
 import MapView, { Marker, PROVIDER_DEFAULT, Region } from 'react-native-maps';
 
-import BottomSheet, { BottomSheetBackgroundProps, BottomSheetFlatList, BottomSheetView } from '@gorhom/bottom-sheet';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import Reanimated, { Extrapolation, interpolate, useAnimatedStyle } from 'react-native-reanimated';
 
 import CityDetailSheet from '../components/CityDetailSheet';
 import LinkAccountScreen from '../components/LinkAccountScreen';
+import MenuSheet from '../components/MenuSheet';
 import LoginScreen from '../components/LoginScreen';
 import { auth } from '../config/firebaseConfig';
-import { isAbortError, searchCities, searchPlaces } from '../services/geocoding';
 import {
   deleteUnlockedCity, getAllCoupleMemories, getAllSavedPlaces,
   getUnlockedCities, getUserProfile, linkCoupleAccounts, savePlace, unlockCity
 } from '../services/firestoreService';
+import { isAbortError, searchCities, searchPlaces } from '../services/geocoding';
 
 export interface City {
   id: string;
@@ -50,30 +49,6 @@ const getThumbnailUrl = (url: string) => {
 };
 
 const AnimatedBlurView = RNAnimated.createAnimatedComponent(BlurView);
-const ReanimatedBlurView = Reanimated.createAnimatedComponent(BlurView);
-
-const LiquidGlassBackground: React.FC<BottomSheetBackgroundProps> = ({ style, animatedIndex }) => {
-  const solidOverlayStyle = useAnimatedStyle(() => {
-    const opacity = interpolate(
-      animatedIndex.value,
-      [0, 0.5, 1],
-      [0, 0.8, 1],
-      Extrapolation.CLAMP
-    );
-    return {
-      opacity,
-      backgroundColor: '#141414',
-    };
-  });
-
-  return (
-    <View style={[style, styles.backgroundWrapper]}>
-      {/* FIXED: Using styles.absoluteFill instead of StyleSheet.absoluteFillObject */}
-      <ReanimatedBlurView intensity={90} tint="dark" style={styles.absoluteFill} />
-      <Reanimated.View style={[styles.absoluteFill, solidOverlayStyle]} />
-    </View>
-  );
-};
 
 const FullScreenImageItem = ({ item, placeName }: { item: any, placeName: string }) => {
   const [isImageLoading, setIsImageLoading] = useState(true);
@@ -93,7 +68,6 @@ const FullScreenImageItem = ({ item, placeName }: { item: any, placeName: string
 export default function App() {
   const mapRef = useRef<MapView>(null);
   const fullScreenListRef = useRef<FlatList>(null);
-  const settingsSheetRef = useRef<BottomSheet>(null);
 
   const [mapMode, setMapMode] = useState<'default' | 'city_menu' | 'view_places' | 'search_place'>('default');
   const [selectedCity, setSelectedCity] = useState<City | null>(null);
@@ -111,8 +85,6 @@ export default function App() {
   const searchAbortControllerRef = useRef<AbortController | null>(null);
 
   const [showSettingsModal, setShowSettingsModal] = useState(false);
-  const [settingsIndex, setSettingsIndex] = useState(0);
-  const [settingsTab, setSettingsTab] = useState<'gallery' | 'memories' | 'stats' | 'sync'>('stats');
 
   const [galleryMemories, setGalleryMemories] = useState<any[]>([]);
   const [isLoadingGallery, setIsLoadingGallery] = useState(false);
@@ -126,7 +98,6 @@ export default function App() {
   const [searchError, setSearchError] = useState<string | null>(null);
   const [previewPlace, setPreviewPlace] = useState<any>(null);
   const [customPlaceName, setCustomPlaceName] = useState('');
-  const [partnerCodeInput, setPartnerCodeInput] = useState('');
 
   const [user, setUser] = useState<User | null>(null);
   const [hasLinkedAccount, setHasLinkedAccount] = useState<boolean>(false);
@@ -347,13 +318,14 @@ export default function App() {
     if (mapMode === 'city_menu') { setMapMode('default'); setSelectedCity(null); }
   };
 
-  const handleConnectPartner = async () => {
-    if (!partnerCodeInput.trim() || !user) return;
+  const handleConnectPartner = async (code: string) => {
+    const partnerCode = code.trim();
+    if (!partnerCode || !user) return;
     try {
-      Keyboard.dismiss(); await linkCoupleAccounts(user.uid, partnerCodeInput.trim());
-      setMyCoupleId(partnerCodeInput.trim()); await loadCitiesAndPlaces(partnerCodeInput.trim()); await loadGallery(partnerCodeInput.trim());
+      Keyboard.dismiss(); await linkCoupleAccounts(user.uid, partnerCode);
+      setMyCoupleId(partnerCode); await loadCitiesAndPlaces(partnerCode); await loadGallery(partnerCode);
       Alert.alert("Success!", "Accounts connected. Your maps are now synced.");
-      setPartnerCodeInput(''); setShowSettingsModal(false);
+      setShowSettingsModal(false);
     } catch (error: any) { Alert.alert("Error", error.message); }
   };
 
@@ -395,7 +367,7 @@ export default function App() {
           <TouchableOpacity onPress={() => setShowAddCityModal(true)} style={styles.glassButtonWrapper}>
             <BlurView intensity={85} tint="dark" style={styles.glassButton}><Text style={styles.addCityText}>+ Add City</Text></BlurView>
           </TouchableOpacity>
-          <TouchableOpacity onPress={() => { setShowSettingsModal(true); setSettingsIndex(0); setSettingsTab('stats'); loadGallery(myCoupleId); }} style={styles.glassButtonWrapper}>
+          <TouchableOpacity onPress={() => { setShowSettingsModal(true); loadGallery(myCoupleId); }} style={styles.glassButtonWrapper}>
             <BlurView intensity={85} tint="dark" style={styles.glassIcon}><FontAwesome name="bars" size={20} color="#fff" /></BlurView>
           </TouchableOpacity>
         </View>
@@ -438,86 +410,19 @@ export default function App() {
 
       {/* --- SETTINGS BURGER MENU --- */}
       {showSettingsModal && (
-        <BottomSheet
-          ref={settingsSheetRef}
-          index={settingsIndex}
-          snapPoints={['35%', '90%']}
-          enableDynamicSizing={false}
-          enablePanDownToClose={true}
-          backgroundComponent={LiquidGlassBackground}
-          handleIndicatorStyle={styles.handleIndicator}
-          onAnimate={(_from, to) => { if (to >= 0) setSettingsIndex(to); }}
-          onChange={(index) => {
-            if (index === -1) setShowSettingsModal(false);
-            setSettingsIndex(index);
-            if (index === 0) setSettingsTab('stats');
-          }}
-        >
-          <BottomSheetView style={styles.contentContainer}>
-            <View style={styles.sheetHeader}>
-              <Text style={styles.sheetTitle}>Menu</Text>
-              <TouchableOpacity onPress={() => settingsSheetRef.current?.close()} style={styles.circularCloseButtonHeader}>
-                <FontAwesome name="times" size={16} color="#ebebf5" />
-              </TouchableOpacity>
-            </View>
-
-            {settingsIndex > 0 && (
-              <View style={styles.tabsContainer}>
-                <TouchableOpacity style={[styles.tabButton, settingsTab === 'gallery' && styles.tabButtonActive]} onPress={() => setSettingsTab('gallery')}><Text style={[styles.tabText, settingsTab === 'gallery' && styles.tabTextActive]}>Gallery</Text></TouchableOpacity>
-                <TouchableOpacity style={[styles.tabButton, settingsTab === 'memories' && styles.tabButtonActive]} onPress={() => setSettingsTab('memories')}><Text style={[styles.tabText, settingsTab === 'memories' && styles.tabTextActive]}>Memories</Text></TouchableOpacity>
-                <TouchableOpacity style={[styles.tabButton, settingsTab === 'stats' && styles.tabButtonActive]} onPress={() => setSettingsTab('stats')}><Text style={[styles.tabText, settingsTab === 'stats' && styles.tabTextActive]}>Stats</Text></TouchableOpacity>
-                <TouchableOpacity style={[styles.tabButton, settingsTab === 'sync' && styles.tabButtonActive]} onPress={() => setSettingsTab('sync')}><Text style={[styles.tabText, settingsTab === 'sync' && styles.tabTextActive]}>Sync</Text></TouchableOpacity>
-              </View>
-            )}
-
-            {(settingsIndex === 0 || settingsTab === 'stats') && (
-              <View style={styles.tabContentArea}>
-                <View style={styles.statsRow}>
-                  <View style={styles.statCard}><Text style={styles.statValue}>{unlockedCities.length}</Text><Text style={styles.statLabel}>Cities Visited</Text></View>
-                  <View style={styles.statCard}><Text style={styles.statValue}>{savedMapPlaces.length}</Text><Text style={styles.statLabel}>Places Saved</Text></View>
-                </View>
-                <View style={styles.statsRow}>
-                  <View style={styles.statCard}><Text style={styles.statValue}>{galleryMemories.length}</Text><Text style={styles.statLabel}>Total Memories</Text></View>
-                  <View style={styles.statCard}><Text style={styles.statValue}>{galleryPhotos.length}</Text><Text style={styles.statLabel}>Photos Taken</Text></View>
-                </View>
-              </View>
-            )}
-
-            {settingsIndex > 0 && settingsTab === 'gallery' && (
-              <View style={styles.edgeToEdgeContainer}>
-                {isLoadingGallery ? (<ActivityIndicator color="#fff" style={{ marginTop: 40 }} />) : (
-                  <BottomSheetFlatList data={galleryPhotos} keyExtractor={item => item.id} numColumns={3} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 40 }} renderItem={({ item, index }) => (<TouchableOpacity style={styles.gridImageContainer} onPress={() => setExpandedGalleryIndex(index)}><Image source={{ uri: getThumbnailUrl(item.url) }} style={styles.gridImage} resizeMode="cover" /></TouchableOpacity>)} ListEmptyComponent={<View style={{ padding: 24 }}><Text style={styles.emptyText}>No photos uploaded yet.</Text></View>} />
-                )}
-              </View>
-            )}
-
-            {settingsIndex > 0 && settingsTab === 'memories' && (
-              <View style={styles.tabContentAreaGallery}>
-                {onThisDayPhotos.length > 0 ? (
-                  <View style={styles.onThisDayContainer}>
-                    <Text style={styles.onThisDayTitle}>On This Day</Text>
-                    <BottomSheetFlatList data={onThisDayPhotos} keyExtractor={item => `otd-${item.id}`} showsVerticalScrollIndicator={false} renderItem={({ item }) => {
-                      const yearsAgo = today.getFullYear() - new Date(item.dateVisited).getFullYear();
-                      const mappedPlace = savedMapPlaces.find(p => p.placeId === item.placeId);
-                      return (<TouchableOpacity style={styles.otdCard} onPress={() => setExpandedGalleryIndex(galleryPhotos.findIndex(p => p.id === item.id))}><Image source={{ uri: getThumbnailUrl(item.url) }} style={styles.otdCardImage} resizeMode="cover" /><View style={styles.yearsAgoBadgeLarge}><Text style={styles.yearsAgoTextLarge}>{yearsAgo} {yearsAgo === 1 ? 'Year' : 'Years'} Ago</Text></View><View style={styles.otdCardText}><Text style={styles.otdPlaceName}>{mappedPlace?.name || 'Unknown Location'}</Text><Text style={styles.otdDate}>{new Date(item.dateVisited).toLocaleDateString()}</Text></View></TouchableOpacity>)
-                    }} />
-                  </View>
-                ) : (<View style={styles.emptyMemoriesContainer}><FontAwesome name="calendar-times-o" size={40} color="#8e8e93" style={{ marginBottom: 16 }} /><Text style={styles.emptyText}>No memories on this exact day in previous years.</Text></View>)}
-              </View>
-            )}
-
-            {settingsIndex > 0 && settingsTab === 'sync' && (
-              <View style={styles.tabContentArea}>
-                <Text style={styles.settingsSubtitle}>Share your code with your partner, or paste theirs below to sync your maps.</Text>
-                <View style={styles.codeBox}><Text style={styles.label}>Your Code (Long press to copy):</Text><Text style={styles.codeText} selectable>{user?.uid}</Text></View>
-                <TextInput style={styles.settingsInput} placeholder="Partner's Connection Code" placeholderTextColor="#8e8e93" value={partnerCodeInput} onChangeText={setPartnerCodeInput} autoCapitalize="none" />
-                <TouchableOpacity style={styles.primarySettingsButton} onPress={handleConnectPartner}><Text style={styles.primaryButtonText}>Connect Accounts</Text></TouchableOpacity>
-                <View style={styles.divider} />
-                <TouchableOpacity style={styles.signOutButtonLarge} onPress={() => signOut(auth)}><Text style={styles.signOutTextLarge}>Log Out</Text></TouchableOpacity>
-              </View>
-            )}
-          </BottomSheetView>
-        </BottomSheet>
+        <MenuSheet
+          stats={{ cities: unlockedCities.length, places: savedMapPlaces.length, memories: galleryMemories.length, photos: galleryPhotos.length }}
+          photos={galleryPhotos}
+          onThisDayPhotos={onThisDayPhotos}
+          placeNameFor={(placeId) => savedMapPlaces.find(p => p.placeId === placeId)?.name}
+          isLoadingGallery={isLoadingGallery}
+          uid={user?.uid}
+          getThumbnailUrl={getThumbnailUrl}
+          onOpenPhoto={(photoId) => setExpandedGalleryIndex(galleryPhotos.findIndex(p => p.id === photoId))}
+          onConnectPartner={handleConnectPartner}
+          onSignOut={() => signOut(auth)}
+          onClose={() => setShowSettingsModal(false)}
+        />
       )}
 
       {/* --- FULLSCREEN GALLERY OVERLAY --- */}
@@ -641,33 +546,9 @@ const styles = StyleSheet.create({
   circularCloseButtonHeader: { width: 30, height: 30, borderRadius: 15, backgroundColor: 'rgba(255, 255, 255, 0.15)', alignItems: 'center', justifyContent: 'center' },
   absoluteCloseButtonSafe: { position: 'absolute', top: 20, right: 20, width: 30, height: 30, borderRadius: 15, backgroundColor: 'rgba(255, 255, 255, 0.15)', alignItems: 'center', justifyContent: 'center', zIndex: 10 },
 
-  backgroundWrapper: { borderRadius: 28, overflow: 'hidden' },
-  handleIndicator: { backgroundColor: 'rgba(255, 255, 255, 0.3)', width: 40, height: 5, marginTop: 10 },
-  contentContainer: { flex: 1, paddingHorizontal: 24, paddingTop: 12 },
 
-  tabsContainer: { flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 14, padding: 4, marginBottom: 20 },
-  tabButton: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 10 },
-  tabButtonActive: { backgroundColor: 'rgba(255,255,255,0.2)' },
-  tabText: { color: '#ebebf5', fontSize: 14, fontWeight: '600', opacity: 0.7 },
-  tabTextActive: { color: '#fff', opacity: 1 },
-  tabContentArea: { flex: 0 },
-  tabContentAreaGallery: { flex: 1 },
 
-  edgeToEdgeContainer: { flex: 1, marginHorizontal: -24 },
-  gridImageContainer: { width: SCREEN_WIDTH / 3, aspectRatio: 1, padding: 1 },
-  gridImage: { width: '100%', height: '100%' },
 
-  onThisDayContainer: { flex: 1, marginBottom: 20 },
-  onThisDayTitle: { fontSize: 20, fontWeight: 'bold', color: '#fff', marginBottom: 16 },
-  otdCard: { backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: 16, overflow: 'hidden', marginBottom: 16 },
-  otdCardImage: { width: '100%', height: 250 },
-  otdCardText: { padding: 16 },
-  otdPlaceName: { fontSize: 18, fontWeight: 'bold', color: '#fff', marginBottom: 4 },
-  otdDate: { fontSize: 14, color: '#ebebf5', opacity: 0.8 },
-  yearsAgoBadgeLarge: { position: 'absolute', top: 16, right: 16, backgroundColor: 'rgba(0,0,0,0.7)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 12, overflow: 'hidden' },
-  yearsAgoTextLarge: { color: '#fff', fontSize: 14, fontWeight: 'bold' },
-  emptyMemoriesContainer: { marginTop: 40, alignItems: 'center' },
-  emptyMemoriesSubText: { color: '#666', textAlign: 'center', marginTop: 8, fontSize: 14 },
 
   fullScreenRootOverlay: { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, backgroundColor: '#000', zIndex: 9999 },
   closeFullScreenBtnRoot: { position: 'absolute', top: 50, right: 20, zIndex: 10000, width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.2)', justifyContent: 'center', alignItems: 'center' },
@@ -678,21 +559,7 @@ const styles = StyleSheet.create({
   fullScreenPlaceName: { fontSize: 18, fontWeight: 'bold', color: '#fff', marginBottom: 4 },
   fullScreenDate: { fontSize: 14, color: '#ebebf5' },
 
-  statsRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 12 },
-  statCard: { flex: 1, backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: 16, padding: 16, marginHorizontal: 4, alignItems: 'center', justifyContent: 'center' },
-  statValue: { fontSize: 32, fontWeight: 'bold', color: '#fff', marginBottom: 4 },
-  statLabel: { fontSize: 12, color: '#ebebf5', opacity: 0.7, textAlign: 'center', fontWeight: '500' },
 
-  settingsSubtitle: { fontSize: 14, color: '#ebebf5', opacity: 0.8, marginBottom: 20, lineHeight: 20 },
-  codeBox: { backgroundColor: 'rgba(255,255,255,0.1)', padding: 16, borderRadius: 14, marginBottom: 20 },
-  label: { fontSize: 12, color: '#ebebf5', opacity: 0.6, marginBottom: 6, fontWeight: '600', textTransform: 'uppercase' },
-  codeText: { fontSize: 16, fontWeight: 'bold', color: '#fff' },
-  settingsInput: { backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 14, padding: 16, fontSize: 16, marginBottom: 16, color: '#fff' },
-  primarySettingsButton: { backgroundColor: '#0a84ff', padding: 16, borderRadius: 14, alignItems: 'center' },
-  primaryButtonText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
-  divider: { height: StyleSheet.hairlineWidth, backgroundColor: 'rgba(255,255,255,0.2)', marginVertical: 24 },
-  signOutButtonLarge: { backgroundColor: 'rgba(255,255,255,0.1)', padding: 16, borderRadius: 14, alignItems: 'center' },
-  signOutTextLarge: { color: '#ff453a', fontSize: 16, fontWeight: 'bold' },
 
   menuSheet: { padding: 24, borderTopLeftRadius: 28, borderTopRightRadius: 28, paddingBottom: 40 },
   menuTitle: { fontSize: 22, fontWeight: 'bold', textAlign: 'center', marginBottom: 4, color: '#fff', marginTop: 10 },
