@@ -1,30 +1,221 @@
 rules_version = '2';
 
+// Activity Map security rules.
+//
+// Model: a couple is a couples/{coupleId} document listing its members (max two). Every data document carries
+// that coupleId, and only the couple's members can read or change it. Partners join through single-use invites
+// (invites/{code}); the join is one batched write that these rules check as a whole.
+//
+// Everything not matched below is denied. Tests: firestore-tests/ (run `npm test` there).
+
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Helper function to check if the request is authenticated
-    function isAuthenticated() {
+
+    // ---------- helpers ----------
+
+    function signedIn() {
       return request.auth != null;
     }
 
-    // Users collection
+    function couplePath(coupleId) {
+      return /databases/$(database)/documents/couples/$(coupleId);
+    }
+
+    // True when the signed-in user is listed in the couple's members.
+    // (get() on a missing couple fails, which denies, so unknown couple ids are never accessible.)
+    function isMember(coupleId) {
+      return signedIn()
+        && coupleId is string
+        && request.auth.uid in get(couplePath(coupleId)).data.members;
+    }
+
+    // Same check against the state after the current write (used inside batched writes).
+    function willBeMember(coupleId) {
+      return signedIn()
+        && coupleId is string
+        && request.auth.uid in getAfter(couplePath(coupleId)).data.members;
+    }
+
+    function isId(value, maxLength) {
+      return value is string && value.size() > 0 && value.size() <= maxLength;
+    }
+
+    function isShortText(value, maxLength) {
+      return value is string && value.size() <= maxLength;
+    }
+
+    function isPlaceId(value) {
+      return (value is string && value.size() > 0 && value.size() <= 100) || value is number;
+    }
+
+    function validCity(d) {
+      return d.keys().hasOnly(['coupleId', 'cityId', 'name', 'latitude', 'longitude', 'unlockedAt'])
+        && d.keys().hasAll(['coupleId', 'cityId', 'name', 'latitude', 'longitude', 'unlockedAt'])
+        && isId(d.cityId, 100)
+        && d.name is string && d.name.size() > 0 && d.name.size() <= 200
+        && d.latitude is number && d.latitude >= -90 && d.latitude <= 90
+        && d.longitude is number && d.longitude >= -180 && d.longitude <= 180
+        && d.unlockedAt is number;
+    }
+
+    // lat and lon are strings because the search services return them as strings.
+    function validPlace(d) {
+      return d.keys().hasOnly(['coupleId', 'cityId', 'placeId', 'name', 'fullName', 'lat', 'lon', 'addedAt'])
+        && d.keys().hasAll(['coupleId', 'cityId', 'placeId', 'name', 'fullName', 'lat', 'lon', 'addedAt'])
+        && isId(d.cityId, 100)
+        && isPlaceId(d.placeId)
+        && isShortText(d.name, 200)
+        && isShortText(d.fullName, 500)
+        && d.lat is string && d.lat.size() > 0 && d.lat.size() <= 32
+        && d.lon is string && d.lon.size() > 0 && d.lon.size() <= 32
+        && d.addedAt is number;
+    }
+
+    // At most one photo per memory, and only from this app's Cloudinary account.
+    function validLog(d) {
+      return d.keys().hasOnly(['coupleId', 'cityId', 'placeId', 'notes', 'dateVisited', 'photoUrls', 'createdBy'])
+        && d.keys().hasAll(['coupleId', 'cityId', 'placeId', 'notes', 'dateVisited', 'photoUrls', 'createdBy'])
+        && isId(d.cityId, 100)
+        && isPlaceId(d.placeId)
+        && isShortText(d.notes, 5000)
+        && d.dateVisited is number
+        && d.photoUrls is list && d.photoUrls.size() <= 1
+        && (d.photoUrls.size() == 0
+            || (d.photoUrls[0] is string
+                && d.photoUrls[0].size() <= 500
+                && d.photoUrls[0].matches('https://res[.]cloudinary[.]com/jpxtr4kd/.*')))
+        && d.createdBy == request.auth.uid;
+    }
+
+    // ---------- data owned by a couple ----------
+    // Read, delete: members only. Create: members only, into their own couple, with a valid shape.
+    // Update: members only, the couple cannot be changed, and only the fields the app edits.
+
+    match /unlocked_cities/{docId} {
+      allow read, delete: if isMember(resource.data.coupleId);
+      allow create: if isMember(request.resource.data.coupleId) && validCity(request.resource.data);
+      allow update: if false;
+    }
+
+    match /saved_places/{docId} {
+      allow read, delete: if isMember(resource.data.coupleId);
+      allow create: if isMember(request.resource.data.coupleId) && validPlace(request.resource.data);
+      // Only the rating can change (0 to 5).
+      allow update: if isMember(resource.data.coupleId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['rating'])
+        && request.resource.data.rating is number
+        && request.resource.data.rating >= 0
+        && request.resource.data.rating <= 5;
+    }
+
+    match /visited_logs/{docId} {
+      allow read, delete: if isMember(resource.data.coupleId);
+      allow create: if isMember(request.resource.data.coupleId) && validLog(request.resource.data);
+      // Only the visit date can change.
+      allow update: if isMember(resource.data.coupleId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['dateVisited'])
+        && request.resource.data.dateVisited is number;
+    }
+
+    // ---------- users ----------
+    // You can read your own profile and your partner's (same couple). You can change only your own, and your
+    // coupleId can only be set to a couple that lists you as a member once the write is applied.
+
+    function validUserFields(d) {
+      return d.keys().hasOnly(['uid', 'email', 'coupleId'])
+        && d.get('uid', request.auth.uid) == request.auth.uid
+        && d.get('email', request.auth.token.email) == request.auth.token.email;
+    }
+
+    function validCoupleIdForUser(d) {
+      return !('coupleId' in d) || d.coupleId == null || willBeMember(d.coupleId);
+    }
+
     match /users/{userId} {
-      allow read, write: if isAuthenticated();
+      allow read: if signedIn()
+        && (request.auth.uid == userId
+            || (resource != null && isMember(resource.data.get('coupleId', null))));
+      allow create: if request.auth.uid == userId
+        && validUserFields(request.resource.data)
+        && validCoupleIdForUser(request.resource.data);
+      allow update: if request.auth.uid == userId
+        && validUserFields(request.resource.data)
+        && (request.resource.data.get('coupleId', null) == resource.data.get('coupleId', null)
+            || validCoupleIdForUser(request.resource.data));
+      allow delete: if false;
     }
 
-    // Unlocked cities
-    match /unlocked_cities/{cityDocId} {
-      allow read, write: if isAuthenticated();
+    // ---------- couples ----------
+    // Read one: members only. No listing. A new couple starts with only its creator. The only change allowed
+    // afterwards is a second person joining with a valid, unused, unexpired invite, in the same batch that
+    // marks the invite used.
+
+    function inviteRedeemedByCaller(coupleId, code) {
+      let invite = /databases/$(database)/documents/invites/$(code);
+      return get(invite).data.coupleId == coupleId
+        && get(invite).data.used == false
+        && get(invite).data.expiresAt > request.time.toMillis()
+        && getAfter(invite).data.used == true
+        && getAfter(invite).data.usedBy == request.auth.uid;
     }
 
-    // Saved places
-    match /saved_places/{placeDocId} {
-      allow read, write: if isAuthenticated();
+    match /couples/{coupleId} {
+      allow get: if signedIn() && request.auth.uid in resource.data.members;
+      allow list: if false;
+
+      // Random 20-character id (Firestore auto id). This also stops anyone pre-creating a document named
+      // after someone else's 28-character uid.
+      allow create: if signedIn()
+        && coupleId.size() == 20
+        && request.resource.data.keys().hasOnly(['members', 'createdAt', 'createdBy'])
+        && request.resource.data.members == [request.auth.uid]
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.createdAt is number;
+
+      allow update: if signedIn()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members', 'joinCode'])
+        && resource.data.members.size() == 1
+        && !(request.auth.uid in resource.data.members)
+        && request.resource.data.members.size() == 2
+        && request.resource.data.members.hasAll(resource.data.members)
+        && request.auth.uid in request.resource.data.members
+        && request.resource.data.joinCode is string
+        && inviteRedeemedByCaller(coupleId, request.resource.data.joinCode);
+
+      allow delete: if false;
     }
 
-    // Visited logs & memories
-    match /visited_logs/{logDocId} {
-      allow read, write: if isAuthenticated();
+    // ---------- invites ----------
+    // The code is the secret: anyone signed in can read one invite if they know its id, but nobody can list them.
+    // Members create invites for their own couple (24 hours, single use). An invite can be marked used only
+    // together with the redeemer joining the couple.
+
+    match /invites/{code} {
+      allow get: if signedIn();
+      allow list: if false;
+
+      allow create: if signedIn()
+        && code.matches('[A-HJKMNP-Z2-9]{10}')
+        && request.resource.data.keys().hasOnly(['coupleId', 'createdBy', 'createdAt', 'expiresAt', 'used'])
+        && request.resource.data.createdBy == request.auth.uid
+        && isMember(request.resource.data.coupleId)
+        && request.resource.data.used == false
+        && request.resource.data.createdAt is number
+        && request.resource.data.expiresAt is number
+        && request.resource.data.expiresAt > request.time.toMillis()
+        && request.resource.data.expiresAt <= request.time.toMillis() + 90000000;
+
+      allow update: if signedIn()
+        && resource.data.used == false
+        && resource.data.expiresAt > request.time.toMillis()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['used', 'usedBy', 'usedAt'])
+        && request.resource.data.used == true
+        && request.resource.data.usedBy == request.auth.uid
+        && request.resource.data.usedAt is number
+        && willBeMember(resource.data.coupleId);
+
+      // The creator can withdraw an invite.
+      allow delete: if signedIn() && resource.data.createdBy == request.auth.uid;
     }
   }
 }

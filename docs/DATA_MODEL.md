@@ -69,9 +69,22 @@ a memory is removed (the app can't do that with an unsigned preset).
 
 ## Security rules
 
-`firestore.rules` currently allows any signed-in user to read and write all four collections. Nothing
-limits a user to their own `coupleId`. It is **not deployed by the repo**: there is no `firebase.json`, so the
-live rules are whatever is set in the Firebase console.
+`firestore.rules` (strict; tested in `firestore-tests/`; rollout in [SECURITY_ROLLOUT.md](SECURITY_ROLLOUT.md)):
+
+- Cities, places and memories: read and delete by couple members only; create only into your own couple with a valid
+  shape (field names, types, lengths; a memory has at most one photo and it must be from this app's Cloudinary
+  account; `createdBy` must be you). Cities are never edited, places only get a rating (0 to 5), memories only a new
+  visit date.
+- `users`: you read your own profile and your partner's; you write only your own; `coupleId` can only point at a couple
+  that lists you; the e-mail must equal your sign-in e-mail.
+- `couples`: members read one; nobody lists. New couples start with only their creator and a random 20-character id.
+  The only update is a second person joining with a valid invite, in the batch that marks the invite used.
+- `invites`: readable by id by anyone signed in (the code is the secret), never listed; created by members, 24 hours
+  maximum; can be marked used only together with the redeemer joining the couple; the creator can delete it.
+- Everything else is denied.
+
+Until the rules are published in the Firebase console, the live database still runs the old rules (any signed-in
+user).
 
 ## What the live database looked like (checked 2026-10-25 in the Firebase console)
 

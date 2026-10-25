@@ -5,7 +5,9 @@
   "description": "Maintenance scripts (backup, later migration). Separate from the app so the app's dependencies are untouched.",
   "scripts": {
     "backup": "node backup.mjs",
-    "backup:photos": "node backup.mjs --photos"
+    "backup:photos": "node backup.mjs --photos",
+    "migrate": "node migrate.mjs",
+    "migrate:apply": "node migrate.mjs --apply"
   },
   "dependencies": {
     "firebase-admin": "^14.5.0"

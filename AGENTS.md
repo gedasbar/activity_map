@@ -41,9 +41,11 @@ target is not a supported way to run this app.
 | `src/services/firestoreService.ts` | Every Firestore read and write; the only file that talks to the database |
 | `src/config/firebaseConfig.ts` | Firebase init; exports `auth`, `db`, `storage` |
 | `src/models/types.ts` | `UserProfile` and `VisitedLog` types |
-| `firestore.rules` | Security rules (not tracked in git yet; must be deployed by hand) |
+| `firestore.rules` | Strict security rules: only a couple's two members can touch its data. Published by pasting into the Firebase console (see `docs/SECURITY_ROLLOUT.md`) |
+| `firestore-tests/` | 100 emulator tests: every rule, the app's real `firestoreService.ts` under the rules, and the migration. `cd firestore-tests && npm test` |
+| `firebase.json` | Emulator and rules configuration (used by the tests; nothing is deployed from it) |
 | `docs/` | Architecture, data model, known issues, roadmap |
-| `scripts/` | Node maintenance scripts (read-only backup). Own `package.json`; needs a service account key that must never be committed or shared |
+| `scripts/` | Node maintenance scripts: read-only `backup.mjs`, dry-run-first `migrate.mjs`. Own `package.json`; needs a service account key that must never be committed or shared |
 
 Imports use relative paths. `tsconfig.json` defines an `@/*` alias, but a commit ("use relative imports ... to
 resolve module alias error") moved off it. Keep using relative imports.
@@ -94,5 +96,6 @@ the menu's Sync tab. There is no way to type another user's uid any more. Detail
 
 - Check the Expo SDK 58 docs before touching anything Expo-related. Many APIs changed.
 - Read [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) before debugging. The current failures are probably listed there.
+- Any change to `firestore.rules`, or to what the app reads or writes in `firestoreService.ts`, must keep `npm test` in `firestore-tests/` passing (it needs Java for the emulator). Add a test for new behaviour.
 - Verify changes with `npx tsc --noEmit`. There are no tests, so for UI changes say plainly that you could not run the app.
 - Don't deploy Firestore rules or touch the Firebase console from here. Tell the user what to change.
