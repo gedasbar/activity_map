@@ -14,7 +14,7 @@ import {
 } from 'react-native';
 import MapView, { Marker, PROVIDER_DEFAULT, Region } from 'react-native-maps';
 
-import BottomSheet, { BottomSheetBackgroundProps, BottomSheetView } from '@gorhom/bottom-sheet';
+import BottomSheet, { BottomSheetBackgroundProps, BottomSheetFlatList, BottomSheetView } from '@gorhom/bottom-sheet';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import Reanimated, { Extrapolation, interpolate, useAnimatedStyle } from 'react-native-reanimated';
 
@@ -442,9 +442,11 @@ export default function App() {
           ref={settingsSheetRef}
           index={settingsIndex}
           snapPoints={['35%', '90%']}
+          enableDynamicSizing={false}
           enablePanDownToClose={true}
           backgroundComponent={LiquidGlassBackground}
           handleIndicatorStyle={styles.handleIndicator}
+          onAnimate={(_from, to) => { if (to >= 0) setSettingsIndex(to); }}
           onChange={(index) => {
             if (index === -1) setShowSettingsModal(false);
             setSettingsIndex(index);
@@ -484,7 +486,7 @@ export default function App() {
             {settingsIndex > 0 && settingsTab === 'gallery' && (
               <View style={styles.edgeToEdgeContainer}>
                 {isLoadingGallery ? (<ActivityIndicator color="#fff" style={{ marginTop: 40 }} />) : (
-                  <FlatList data={galleryPhotos} keyExtractor={item => item.id} numColumns={3} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 40 }} renderItem={({ item, index }) => (<TouchableOpacity style={styles.gridImageContainer} onPress={() => setExpandedGalleryIndex(index)}> <Image source={{ uri: getThumbnailUrl(item.url) }} style={styles.gridImage} resizeMode="cover" /> </TouchableOpacity>)} ListEmptyComponent={<View style={{ padding: 24 }}><Text style={styles.emptyText}>No photos uploaded yet.</Text></View>} />
+                  <BottomSheetFlatList data={galleryPhotos} keyExtractor={item => item.id} numColumns={3} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 40 }} renderItem={({ item, index }) => (<TouchableOpacity style={styles.gridImageContainer} onPress={() => setExpandedGalleryIndex(index)}><Image source={{ uri: getThumbnailUrl(item.url) }} style={styles.gridImage} resizeMode="cover" /></TouchableOpacity>)} ListEmptyComponent={<View style={{ padding: 24 }}><Text style={styles.emptyText}>No photos uploaded yet.</Text></View>} />
                 )}
               </View>
             )}
@@ -494,13 +496,13 @@ export default function App() {
                 {onThisDayPhotos.length > 0 ? (
                   <View style={styles.onThisDayContainer}>
                     <Text style={styles.onThisDayTitle}>On This Day</Text>
-                    <FlatList data={onThisDayPhotos} keyExtractor={item => `otd-${item.id}`} showsVerticalScrollIndicator={false} renderItem={({ item }) => {
+                    <BottomSheetFlatList data={onThisDayPhotos} keyExtractor={item => `otd-${item.id}`} showsVerticalScrollIndicator={false} renderItem={({ item }) => {
                       const yearsAgo = today.getFullYear() - new Date(item.dateVisited).getFullYear();
                       const mappedPlace = savedMapPlaces.find(p => p.placeId === item.placeId);
-                      return (<TouchableOpacity style={styles.otdCard} onPress={() => setExpandedGalleryIndex(galleryPhotos.findIndex(p => p.id === item.id))}> <Image source={{ uri: getThumbnailUrl(item.url) }} style={styles.otdCardImage} resizeMode="cover" /> <View style={styles.yearsAgoBadgeLarge}><Text style={styles.yearsAgoTextLarge}>{yearsAgo} {yearsAgo === 1 ? 'Year' : 'Years'} Ago</Text></View> <View style={styles.otdCardText}> <Text style={styles.otdPlaceName}>{mappedPlace?.name || 'Unknown Location'}</Text> <Text style={styles.otdDate}>{new Date(item.dateVisited).toLocaleDateString()}</Text> </View> </TouchableOpacity>)
+                      return (<TouchableOpacity style={styles.otdCard} onPress={() => setExpandedGalleryIndex(galleryPhotos.findIndex(p => p.id === item.id))}><Image source={{ uri: getThumbnailUrl(item.url) }} style={styles.otdCardImage} resizeMode="cover" /><View style={styles.yearsAgoBadgeLarge}><Text style={styles.yearsAgoTextLarge}>{yearsAgo} {yearsAgo === 1 ? 'Year' : 'Years'} Ago</Text></View><View style={styles.otdCardText}><Text style={styles.otdPlaceName}>{mappedPlace?.name || 'Unknown Location'}</Text><Text style={styles.otdDate}>{new Date(item.dateVisited).toLocaleDateString()}</Text></View></TouchableOpacity>)
                     }} />
                   </View>
-                ) : (<View style={styles.emptyMemoriesContainer}> <FontAwesome name="calendar-times-o" size={40} color="#8e8e93" style={{ marginBottom: 16 }} /> <Text style={styles.emptyText}>No memories on this exact day in previous years.</Text> </View>)}
+                ) : (<View style={styles.emptyMemoriesContainer}><FontAwesome name="calendar-times-o" size={40} color="#8e8e93" style={{ marginBottom: 16 }} /><Text style={styles.emptyText}>No memories on this exact day in previous years.</Text></View>)}
               </View>
             )}
 
@@ -578,7 +580,7 @@ export default function App() {
               <FlatList
                 data={citySearchResults} keyExtractor={(item) => item.id} keyboardShouldPersistTaps="handled"
                 renderItem={({ item }) => (<TouchableOpacity style={styles.cityListItem} onPress={() => handleAddNewCity(item)}><Text style={styles.cityListText}>{item.name}</Text></TouchableOpacity>)}
-                ListEmptyComponent={<View style={styles.emptyListContainer}> {isSearchingCity ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.emptyListText}>{citySearchError ? citySearchError : citySearchQuery.length < 2 ? "Type a city name to search globally" : "No cities found"}</Text>} </View>}
+                ListEmptyComponent={<View style={styles.emptyListContainer}>{isSearchingCity ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.emptyListText}>{citySearchError ? citySearchError : citySearchQuery.length < 2 ? "Type a city name to search globally" : "No cities found"}</Text>}</View>}
               />
             </AnimatedBlurView>
           </KeyboardAvoidingView>
@@ -655,7 +657,7 @@ const styles = StyleSheet.create({
   gridImageContainer: { width: SCREEN_WIDTH / 3, aspectRatio: 1, padding: 1 },
   gridImage: { width: '100%', height: '100%' },
 
-  onThisDayContainer: { marginBottom: 20 },
+  onThisDayContainer: { flex: 1, marginBottom: 20 },
   onThisDayTitle: { fontSize: 20, fontWeight: 'bold', color: '#fff', marginBottom: 16 },
   otdCard: { backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: 16, overflow: 'hidden', marginBottom: 16 },
   otdCardImage: { width: '100%', height: 250 },
