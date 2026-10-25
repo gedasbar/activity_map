@@ -1,0 +1,13 @@
+{
+  "name": "activity-map-scripts",
+  "private": true,
+  "type": "module",
+  "description": "Maintenance scripts (backup, later migration). Separate from the app so the app's dependencies are untouched.",
+  "scripts": {
+    "backup": "node backup.mjs",
+    "backup:photos": "node backup.mjs --photos"
+  },
+  "dependencies": {
+    "firebase-admin": "^14.5.0"
+  }
+}
