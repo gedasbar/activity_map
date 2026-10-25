@@ -6,7 +6,9 @@
 //   node backup.mjs --photos         data and photo files
 //   node backup.mjs --key path.json --out ../backups/my-folder
 
-import admin from 'firebase-admin';
+import { cert, initializeApp } from 'firebase-admin/app';
+import { getAuth } from 'firebase-admin/auth';
+import { DocumentReference, GeoPoint, getFirestore, Timestamp } from 'firebase-admin/firestore';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -33,12 +35,20 @@ const fail = (message) => {
   process.exit(1);
 };
 
+// Turn the common Google API failures into something readable instead of a stack trace.
+process.on('uncaughtException', (e) => {
+  const text = String(e?.message ?? e);
+  if (/UNAUTHENTICATED|invalid_grant|Invalid JWT/i.test(text)) fail('Google rejected the key. Generate a fresh one (README step 1) and make sure it is saved unedited.');
+  if (/PERMISSION_DENIED|403/.test(text)) fail('The key was accepted but is not allowed to read this project. Use a key from the Firebase Admin SDK service account of this project.');
+  fail(text);
+});
+
 // Firestore values that JSON cannot represent are written with a __type marker so nothing is lost.
 const toPlain = (value) => {
   if (value === null || typeof value !== 'object') return value;
-  if (value instanceof admin.firestore.Timestamp) return { __type: 'timestamp', iso: value.toDate().toISOString(), seconds: value.seconds, nanoseconds: value.nanoseconds };
-  if (value instanceof admin.firestore.GeoPoint) return { __type: 'geopoint', latitude: value.latitude, longitude: value.longitude };
-  if (value instanceof admin.firestore.DocumentReference) return { __type: 'reference', path: value.path };
+  if (value instanceof Timestamp) return { __type: 'timestamp', iso: value.toDate().toISOString(), seconds: value.seconds, nanoseconds: value.nanoseconds };
+  if (value instanceof GeoPoint) return { __type: 'geopoint', latitude: value.latitude, longitude: value.longitude };
+  if (value instanceof DocumentReference) return { __type: 'reference', path: value.path };
   if (Array.isArray(value)) return value.map(toPlain);
   return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, toPlain(v)]));
 };
@@ -58,8 +68,8 @@ if (serviceAccount.project_id !== EXPECTED_PROJECT_ID) {
   fail(`This key is for project "${serviceAccount.project_id}", but this app uses "${EXPECTED_PROJECT_ID}". Nothing was read.`);
 }
 
-admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
-const db = admin.firestore();
+initializeApp({ credential: cert(serviceAccount) });
+const db = getFirestore();
 
 console.log(`Backing up project ${EXPECTED_PROJECT_ID}\nTo: ${outDir}\n`);
 
@@ -76,7 +86,7 @@ for (const name of COLLECTIONS) {
 const authUsers = [];
 let pageToken;
 do {
-  const page = await admin.auth().listUsers(1000, pageToken);
+  const page = await getAuth().listUsers(1000, pageToken);
   for (const u of page.users) {
     authUsers.push({
       uid: u.uid,
