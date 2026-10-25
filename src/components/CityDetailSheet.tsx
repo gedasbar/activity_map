@@ -44,12 +44,11 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
   const [editingLogId, setEditingLogId] = useState<string | null>(null);
   const [editDate, setEditDate] = useState<Date>(new Date());
 
-  // --- DYNAMIC SLIDE-TO-CLOSE ANIMATION ---
   const slideAnim = useRef(new Animated.Value(0)).current;
 
   const sheetPanResponder = useMemo(() => PanResponder.create({
-    onStartShouldSetPanResponder: () => true, // Instantly register touch on the drag pill
-    onMoveShouldSetPanResponder: (_, gestureState) => gestureState.dy > 5, // Only trigger on downward swipe
+    onStartShouldSetPanResponder: () => true,
+    onMoveShouldSetPanResponder: (_, gestureState) => gestureState.dy > 5,
     onPanResponderMove: (_, gestureState) => {
       if (gestureState.dy > 0) slideAnim.setValue(gestureState.dy);
     },
@@ -59,7 +58,7 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
           toValue: SCREEN_HEIGHT,
           duration: 250,
           useNativeDriver: true
-        }).start(() => onClose()); // Close exactly when animation ends (no bounce)
+        }).start(() => onClose());
       } else {
         Animated.spring(slideAnim, {
           toValue: 0,
@@ -70,7 +69,6 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
   }), []);
 
   useEffect(() => {
-    // Reset the animation to the top whenever the sheet is freshly opened
     slideAnim.setValue(0);
     loadSavedPlaces();
   }, [cityId]);
@@ -283,8 +281,9 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
             <View style={styles.dragPill} />
             <View style={styles.header}>
               <Text style={styles.cityName}>{cityName}</Text>
-              <TouchableOpacity onPress={onClose} hitSlop={{top:15, bottom:15, left:15, right:15}}>
-                <Text style={styles.closeText}>Close</Text>
+              {/* FIXED: Circular Frosted Close Button */}
+              <TouchableOpacity onPress={onClose} style={styles.circularCloseButtonHeader}>
+                <FontAwesome name="times" size={16} color="#ebebf5" />
               </TouchableOpacity>
             </View>
           </View>
@@ -370,12 +369,16 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
         <View style={styles.dragArea} {...sheetPanResponder.panHandlers}>
           <View style={styles.dragPill} />
           <View style={styles.header}>
-            <TouchableOpacity onPress={() => setViewMode('city')} hitSlop={{top:15, bottom:15, left:15, right:15}}>
-              <Text style={styles.backText}>← Back</Text>
+            {/* FIXED: Circular frosted back button */}
+            <TouchableOpacity onPress={() => setViewMode('city')} style={styles.circularCloseButtonHeader}>
+              <FontAwesome name="chevron-left" size={14} color="#ebebf5" style={{ marginLeft: -2 }} />
             </TouchableOpacity>
+
             <Text style={styles.cityName} numberOfLines={1}>{activePlace?.name}</Text>
-            <TouchableOpacity onPress={onClose} hitSlop={{top:15, bottom:15, left:15, right:15}}>
-              <Text style={styles.closeText}>Close</Text>
+
+            {/* FIXED: Circular frosted close button */}
+            <TouchableOpacity onPress={onClose} style={styles.circularCloseButtonHeader}>
+              <FontAwesome name="times" size={16} color="#ebebf5" />
             </TouchableOpacity>
           </View>
         </View>
@@ -531,7 +534,7 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
         <Modal visible={!!expandedImage} transparent={true} animationType="fade" onRequestClose={() => setExpandedImage(null)}>
           <View style={styles.fullScreenImageContainer}>
             <TouchableOpacity style={styles.closeFullScreenButton} onPress={() => setExpandedImage(null)}>
-              <FontAwesome name="times" size={28} color="#fff" />
+              <FontAwesome name="times" size={24} color="#fff" />
             </TouchableOpacity>
             {expandedImage && (
                 <Image source={{ uri: expandedImage }} style={styles.fullScreenImage} resizeMode="contain" />
@@ -545,14 +548,21 @@ export default function CityDetailSheet({ cityId, cityName, coupleId, onClose, o
 const styles = StyleSheet.create({
   container: { height: '85%', paddingTop: 12, paddingHorizontal: 24, borderTopLeftRadius: 28, borderTopRightRadius: 28, overflow: 'hidden' },
 
-  // INCREASED DRAG AREA HITBOX
   dragArea: { width: '100%', alignItems: 'center', paddingTop: 16, paddingBottom: 16, backgroundColor: 'transparent' },
   dragPill: { width: 40, height: 5, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.3)', marginBottom: 16 },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', width: '100%', marginBottom: 16 },
 
   cityName: { fontSize: 22, fontWeight: 'bold', flex: 1, textAlign: 'center', marginHorizontal: 10, color: '#fff' },
-  closeText: { fontSize: 16, color: '#0a84ff', fontWeight: '600' },
-  backText: { fontSize: 16, color: '#0a84ff', fontWeight: '600' },
+
+  // NEW: Circular Frosted Button Styles
+  circularCloseButtonHeader: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
 
   savedPlaceCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 16, marginBottom: 12, padding: 16 },
   savedPlaceContent: { flex: 1, marginRight: 10 },
@@ -595,7 +605,7 @@ const styles = StyleSheet.create({
   emptyText: { textAlign: 'center', color: '#8e8e93', marginTop: 30, fontSize: 16 },
 
   fullScreenImageContainer: { flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.95)', justifyContent: 'center', alignItems: 'center' },
-  closeFullScreenButton: { position: 'absolute', top: 50, right: 20, zIndex: 10, padding: 16 },
+  closeFullScreenButton: { position: 'absolute', top: 50, right: 20, zIndex: 10, padding: 16, width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.2)', justifyContent: 'center', alignItems: 'center' },
   fullScreenImage: { width: '100%', height: '100%' },
 
   alertBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
