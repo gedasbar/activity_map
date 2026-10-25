@@ -22,6 +22,7 @@ import CityDetailSheet from '../components/CityDetailSheet';
 import LinkAccountScreen from '../components/LinkAccountScreen';
 import LoginScreen from '../components/LoginScreen';
 import { auth } from '../config/firebaseConfig';
+import { isAbortError, searchCities, searchPlaces } from '../services/geocoding';
 import {
   deleteUnlockedCity, getAllCoupleMemories, getAllSavedPlaces,
   getUnlockedCities, getUserProfile, linkCoupleAccounts, savePlace, unlockCity
@@ -37,6 +38,7 @@ export interface City {
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const LITHUANIA_REGION = { latitude: 55.1694, longitude: 23.8813, latitudeDelta: 3.2, longitudeDelta: 4.8 };
 const ZOOM_THRESHOLD = 0.15;
+const SEARCH_DEBOUNCE_MS = 700; // Nominatim allows about 1 request per second
 
 const normalizeText = (text: string) => text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
@@ -101,6 +103,7 @@ export default function App() {
   const [citySearchQuery, setCitySearchQuery] = useState('');
   const [citySearchResults, setCitySearchResults] = useState<City[]>([]);
   const [isSearchingCity, setIsSearchingCity] = useState(false);
+  const [citySearchError, setCitySearchError] = useState<string | null>(null);
 
   const citySearchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const citySearchAbortControllerRef = useRef<AbortController | null>(null);
@@ -120,6 +123,7 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [isSearchingLocation, setIsSearchingLocation] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
   const [previewPlace, setPreviewPlace] = useState<any>(null);
   const [customPlaceName, setCustomPlaceName] = useState('');
   const [partnerCodeInput, setPartnerCodeInput] = useState('');
@@ -157,7 +161,7 @@ export default function App() {
 
   const settingsPanResponder = useMemo(() => createDynamicSwipe(settingsSlideAnim, () => setShowSettingsModal(false)), []);
   const addCityPanResponder = useMemo(() => createDynamicSwipe(addCitySlideAnim, () => {
-    setShowAddCityModal(false); setCitySearchQuery(''); setCitySearchResults([]);
+    setShowAddCityModal(false); setCitySearchQuery(''); setCitySearchResults([]); setCitySearchError(null);
   }), []);
 
   useEffect(() => {
@@ -231,7 +235,7 @@ export default function App() {
     try {
       await unlockCity(myCoupleId, city);
       await loadCitiesAndPlaces(myCoupleId);
-      setShowAddCityModal(false); setCitySearchQuery(''); setCitySearchResults([]);
+      setShowAddCityModal(false); setCitySearchQuery(''); setCitySearchResults([]); setCitySearchError(null);
       mapRef.current?.animateToRegion({ latitude: city.latitude, longitude: city.longitude, latitudeDelta: 0.15, longitudeDelta: 0.15 });
     } catch (err: any) {
       Alert.alert('Error', err.message);
@@ -242,6 +246,7 @@ export default function App() {
     setCitySearchQuery(text);
     if (citySearchTimeoutRef.current) clearTimeout(citySearchTimeoutRef.current);
     if (citySearchAbortControllerRef.current) citySearchAbortControllerRef.current.abort();
+    setCitySearchError(null);
     const trimmed = text.trim();
     if (trimmed.length < 2) { setCitySearchResults([]); setIsSearchingCity(false); return; }
 
@@ -250,29 +255,15 @@ export default function App() {
       const abortController = new AbortController();
       citySearchAbortControllerRef.current = abortController;
       try {
-        const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(trimmed)}&format=json&limit=7&featuretype=settlement&addressdetails=1&accept-language=lt,en`;
-        const response = await fetch(url, { signal: abortController.signal, headers: { 'User-Agent': 'ActivityMapApp/1.0' } });
-        if (!response.ok) return;
-        const contentType = response.headers.get('content-type') || '';
-        let data: any[] = [];
-        if (!contentType.includes('application/json')) {
-          const textResponse = await response.text();
-          if (textResponse.trim().startsWith('<')) return;
-          data = JSON.parse(textResponse);
-        } else { data = await response.json(); }
-
-        if (Array.isArray(data)) {
-          const mapped: City[] = data
-            .map((item: any) => {
-              const cityName = item.name || item.address?.city || item.address?.town || item.address?.village || item.display_name.split(',')[0];
-              const country = item.address?.country || '';
-              return { id: `osm_${item.place_id}`, name: country ? `${cityName}, ${country}` : cityName, latitude: parseFloat(item.lat), longitude: parseFloat(item.lon) };
-            }).filter((c) => !unlockedCities.some((u) => normalizeText(u.name) === normalizeText(c.name)));
-          setCitySearchResults(mapped);
-        }
-      } catch (e: any) { if (e.name !== 'AbortError') console.error(e); } finally { setIsSearchingCity(false); }
-    }, 400);
+        const found = await searchCities(trimmed, abortController.signal);
+        setCitySearchResults(found.filter((c) => !unlockedCities.some((u) => normalizeText(u.name) === normalizeText(c.name))));
+      } catch (e: any) {
+        if (isAbortError(e)) return;
+        setCitySearchResults([]); setCitySearchError(e?.message || 'Search failed. Please try again.');
+      } finally { if (citySearchAbortControllerRef.current === abortController) setIsSearchingCity(false); }
+    }, SEARCH_DEBOUNCE_MS);
   };
+
 
   const handleDeleteCity = (city: City) => {
     Alert.alert('Remove City', `Are you sure you want to remove ${city.name}?`, [
@@ -296,6 +287,7 @@ export default function App() {
     setSearchQuery(text);
     if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
     if (searchAbortControllerRef.current) searchAbortControllerRef.current.abort();
+    setSearchError(null);
     const trimmed = text.trim();
     if (trimmed.length < 2) { setSearchResults([]); setIsSearchingLocation(false); return; }
 
@@ -303,20 +295,12 @@ export default function App() {
     searchTimeoutRef.current = setTimeout(async () => {
       const abortController = new AbortController(); searchAbortControllerRef.current = abortController;
       try {
-        const query = selectedCity ? `${trimmed}, ${selectedCity.name}` : trimmed;
-        const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=7&addressdetails=1&accept-language=lt,en`;
-        const response = await fetch(url, { signal: abortController.signal, headers: { 'User-Agent': 'ActivityMapApp/1.0' } });
-        if (!response.ok) return;
-        const contentType = response.headers.get('content-type') || '';
-        if (!contentType.includes('application/json')) {
-          const textResponse = await response.text();
-          if (textResponse.trim().startsWith('<')) return;
-          setSearchResults(Array.isArray(JSON.parse(textResponse)) ? JSON.parse(textResponse) : []);
-        } else {
-          const data = await response.json(); setSearchResults(Array.isArray(data) ? data : []);
-        }
-      } catch (e: any) { if (e.name !== 'AbortError') console.error(e); } finally { setIsSearchingLocation(false); }
-    }, 400);
+        setSearchResults(await searchPlaces(trimmed, selectedCity, abortController.signal));
+      } catch (e: any) {
+        if (isAbortError(e)) return;
+        setSearchResults([]); setSearchError(e?.message || 'Search failed. Please try again.');
+      } finally { if (searchAbortControllerRef.current === abortController) setIsSearchingLocation(false); }
+    }, SEARCH_DEBOUNCE_MS);
   };
 
   const selectSearchResult = (item: any) => {
@@ -356,7 +340,7 @@ export default function App() {
   };
 
   const cancelSearch = () => {
-    Keyboard.dismiss(); setMapMode('default'); setSelectedCity(null); setPreviewPlace(null); setSearchQuery(''); setSearchResults([]); setCustomPlaceName('');
+    Keyboard.dismiss(); setMapMode('default'); setSelectedCity(null); setPreviewPlace(null); setSearchQuery(''); setSearchResults([]); setSearchError(null); setCustomPlaceName('');
   };
 
   const handleMapPress = () => {
@@ -424,6 +408,7 @@ export default function App() {
             <TextInput style={styles.searchInput} placeholder={`Search in ${selectedCity?.name}...`} placeholderTextColor="#8e8e93" value={searchQuery} onChangeText={handleOSMSearch} />
             {isSearchingLocation && <ActivityIndicator size="small" color="#fff" style={{ marginLeft: 8 }} />}
           </BlurView>
+          {!!searchError && <BlurView intensity={85} tint="dark" style={styles.searchResultsBox}><Text style={styles.searchErrorText}>{searchError}</Text></BlurView>}
           {searchResults.length > 0 && (
             <BlurView intensity={85} tint="dark" style={styles.searchResultsBox}>
               {searchResults.map((item) => (
@@ -571,14 +556,14 @@ export default function App() {
       <Modal visible={showAddCityModal} transparent animationType="slide">
         <View style={styles.modalBackdrop}>
           {/* FIXED: Tapping background closes menu */}
-          <Pressable style={styles.absoluteFill} onPress={() => { setShowAddCityModal(false); setCitySearchQuery(''); setCitySearchResults([]); }} />
+          <Pressable style={styles.absoluteFill} onPress={() => { setShowAddCityModal(false); setCitySearchQuery(''); setCitySearchResults([]); setCitySearchError(null); }} />
           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ width: '100%', justifyContent: 'flex-end', flex: 1 }} pointerEvents="box-none">
             <AnimatedBlurView intensity={90} tint="dark" style={[styles.addCitySheet, { transform: [{ translateY: addCitySlideAnim }] }]}>
               <View style={styles.dragArea} {...addCityPanResponder.panHandlers}>
                 <View style={styles.dragPill} />
                 <View style={styles.sheetHeader}>
                   <Text style={styles.sheetTitle}>Select a city</Text>
-                  <TouchableOpacity onPress={() => { setShowAddCityModal(false); setCitySearchQuery(''); setCitySearchResults([]); }} style={styles.circularCloseButtonHeader}>
+                  <TouchableOpacity onPress={() => { setShowAddCityModal(false); setCitySearchQuery(''); setCitySearchResults([]); setCitySearchError(null); }} style={styles.circularCloseButtonHeader}>
                     <FontAwesome name="times" size={16} color="#ebebf5" />
                   </TouchableOpacity>
                 </View>
@@ -588,12 +573,12 @@ export default function App() {
                 <FontAwesome name="search" size={16} color="#8e8e93" style={styles.citySearchIcon} />
                 <TextInput style={styles.citySearchInput} placeholder="Search city..." placeholderTextColor="#8e8e93" value={citySearchQuery} onChangeText={handleCitySearch} autoCorrect={false} autoCapitalize="none" clearButtonMode="while-editing" />
                 {isSearchingCity && <ActivityIndicator size="small" color="#fff" style={{ marginRight: 6 }} />}
-                {citySearchQuery.length > 0 && <TouchableOpacity onPress={() => { setCitySearchQuery(''); setCitySearchResults([]); }} style={styles.clearSearchButton}><FontAwesome name="times-circle" size={16} color="#8e8e93" /></TouchableOpacity>}
+                {citySearchQuery.length > 0 && <TouchableOpacity onPress={() => { setCitySearchQuery(''); setCitySearchResults([]); setCitySearchError(null); }} style={styles.clearSearchButton}><FontAwesome name="times-circle" size={16} color="#8e8e93" /></TouchableOpacity>}
               </View>
               <FlatList
                 data={citySearchResults} keyExtractor={(item) => item.id} keyboardShouldPersistTaps="handled"
                 renderItem={({ item }) => (<TouchableOpacity style={styles.cityListItem} onPress={() => handleAddNewCity(item)}><Text style={styles.cityListText}>{item.name}</Text></TouchableOpacity>)}
-                ListEmptyComponent={<View style={styles.emptyListContainer}> {isSearchingCity ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.emptyListText}>{citySearchQuery.length < 2 ? "Type a city name to search globally" : "No cities found"}</Text>} </View>}
+                ListEmptyComponent={<View style={styles.emptyListContainer}> {isSearchingCity ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.emptyListText}>{citySearchError ? citySearchError : citySearchQuery.length < 2 ? "Type a city name to search globally" : "No cities found"}</Text>} </View>}
               />
             </AnimatedBlurView>
           </KeyboardAvoidingView>
@@ -723,6 +708,7 @@ const styles = StyleSheet.create({
   cityListItem: { paddingVertical: 16, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: 'rgba(255,255,255,0.1)' },
   cityListText: { fontSize: 18, color: '#fff' },
   emptyListContainer: { paddingVertical: 32, alignItems: 'center' },
-  emptyListText: { fontSize: 16, color: '#8e8e93' },
+  emptyListText: { fontSize: 16, color: '#8e8e93', textAlign: 'center' },
+  searchErrorText: { color: '#ff9f0a', fontSize: 14, padding: 8 },
   emptyText: { textAlign: 'center', color: '#8e8e93', marginTop: 30, fontSize: 16 }
 });
